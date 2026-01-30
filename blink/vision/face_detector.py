@@ -1,6 +1,6 @@
 """Face detection using MediaPipe Face Mesh."""
 
-from typing import Optional
+from typing import Optional, Any
 
 import cv2
 import mediapipe as mp
@@ -24,19 +24,29 @@ class FaceDetector:
         """
         self.max_faces = max_faces
         self.refine_landmarks = refine_landmarks
-        self._mp_face_mesh: Optional[mp.solutions.face_mesh.FaceMesh] = None
+        self._mp_face_mesh: Optional[Any] = None
 
     def initialize(self) -> None:
         """Initialize MediaPipe Face Mesh."""
         if self._mp_face_mesh is not None:
             return
 
-        self._mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
-            max_num_faces=self.max_faces,
-            refine_landmarks=self.refine_landmarks,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
+        try:
+            # Try new MediaPipe API first
+            self._mp_face_mesh = mp.FaceMesh(
+                max_num_faces=self.max_faces,
+                refine_landmarks=self.refine_landmarks,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+        except AttributeError:
+            # Fallback to older API
+            self._mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
+                max_num_faces=self.max_faces,
+                refine_landmarks=self.refine_landmarks,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
         logger.info("MediaPipe Face Mesh initialized")
 
     def process_frame(self, frame: np.ndarray) -> Optional[dict]:
@@ -87,7 +97,7 @@ class FaceDetector:
         self,
         frame: np.ndarray,
         face_landmarks_list: list,
-    ) -> Optional[mp.solutions.face_mesh.FaceMesh]:
+    ) -> Optional[Any]:
         """Select the largest face by bounding box area.
 
         Args:
