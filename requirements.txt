@@ -3,6 +3,10 @@
 # UI Framework
 PyQt6==6.7.0
 
+# Computer Vision & ML
+mediapipe==0.10.14
+opencv-python==4.9.0.80
+
 # Cross-platform paths
 platformdirs==4.2.2
 

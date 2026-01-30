@@ -3,22 +3,18 @@
 from loguru import logger
 
 from blink.config.settings import AlertMode, CameraResolution, Settings
-from blink.utils.validators import (
-    validate_alert_interval,
-    validate_blink_rate,
-)
+from blink.utils.validators import validate_alert_interval, validate_blink_rate
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QLabel,
     QSpinBox,
     QTabWidget,
-    QTextEdit,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -42,8 +38,8 @@ class SettingsDialog(QDialog):
     def _init_ui(self) -> None:
         """Initialize UI components."""
         self.setWindowTitle("Blink! Settings")
-        self.setMinimumSize(600, 500)
-        self.resize(650, 550)
+        self.setMinimumSize(650, 550)
+        self.resize(700, 600)
 
         layout = QVBoxLayout(self)
 
@@ -51,6 +47,7 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._create_alert_tab(), "Alert Settings")
         tabs.addTab(self._create_camera_tab(), "Camera")
+        tabs.addTab(self._create_detection_tab(), "Detection")
         tabs.addTab(self._create_ui_tab(), "Interface")
         tabs.addTab(self._create_privacy_tab(), "Privacy")
 
@@ -129,10 +126,66 @@ class SettingsDialog(QDialog):
         self._fps_spin.setValue(self._temp_settings.target_fps)
         layout.addRow("Target FPS:", self._fps_spin)
 
+        # Camera ID
+        self._camera_id_spin = QSpinBox()
+        self._camera_id_spin.setRange(0, 9)
+        self._camera_id_spin.setValue(self._temp_settings.camera_id)
+        layout.addRow("Camera ID:", self._camera_id_spin)
+
         # Enable camera
         self._camera_enabled_check = QCheckBox()
         self._camera_enabled_check.setChecked(self._temp_settings.camera_enabled)
         layout.addRow("Enable Camera:", self._camera_enabled_check)
+
+        return widget
+
+    def _create_detection_tab(self) -> QWidget:
+        """Create detection settings tab.
+
+        Returns:
+            Widget with detection settings.
+        """
+        widget = QWidget()
+        layout = QFormLayout(widget)
+
+        # EAR threshold
+        self._ear_threshold_spin = QDoubleSpinBox()
+        self._ear_threshold_spin.setRange(0.1, 0.4)
+        self._ear_threshold_spin.setSingleStep(0.01)
+        self._ear_threshold_spin.setDecimals(3)
+        self._ear_threshold_spin.setValue(self._temp_settings.ear_threshold)
+        layout.addRow("EAR Threshold:", self._ear_threshold_spin)
+
+        # Auto calibrate
+        self._auto_calibrate_check = QCheckBox()
+        self._auto_calibrate_check.setChecked(self._temp_settings.auto_calibrate)
+        layout.addRow("Auto-calibrate on Start:", self._auto_calibrate_check)
+
+        layout.addRow(
+            QLabel(
+                "<i>Lower threshold = more sensitive. "
+                "Calibrate for best results.</i>"
+            )
+        )
+
+        # Blink consecutive frames
+        self._blink_frames_spin = QSpinBox()
+        self._blink_frames_spin.setRange(1, 5)
+        self._blink_frames_spin.setValue(self._temp_settings.blink_consecutive_frames)
+        layout.addRow("Blink Consecutive Frames:", self._blink_frames_spin)
+
+        # Min/Max blink duration
+        self._min_blink_spin = QSpinBox()
+        self._min_blink_spin.setRange(20, 200)
+        self._min_blink_spin.setSuffix(" ms")
+        self._min_blink_spin.setValue(self._temp_settings.min_blink_duration_ms)
+        layout.addRow("Min Blink Duration:", self._min_blink_spin)
+
+        self._max_blink_spin = QSpinBox()
+        self._max_blink_spin.setRange(200, 1000)
+        self._max_blink_spin.setSuffix(" ms")
+        self._max_blink_spin.setValue(self._temp_settings.max_blink_duration_ms)
+        layout.addRow("Max Blink Duration:", self._max_blink_spin)
 
         return widget
 
@@ -159,6 +212,11 @@ class SettingsDialog(QDialog):
         self._notifications_check = QCheckBox()
         self._notifications_check.setChecked(self._temp_settings.enable_notifications)
         layout.addRow("Enable Notifications:", self._notifications_check)
+
+        # Status panel
+        self._status_panel_check = QCheckBox()
+        self._status_panel_check.setChecked(self._temp_settings.show_status_panel)
+        layout.addRow("Show Status Panel:", self._status_panel_check)
 
         return widget
 
@@ -215,10 +273,17 @@ class SettingsDialog(QDialog):
             self._temp_settings.animation_duration_ms = self._animation_spin.value()
             self._temp_settings.camera_resolution = self._resolution_combo.currentData()
             self._temp_settings.target_fps = self._fps_spin.value()
+            self._temp_settings.camera_id = self._camera_id_spin.value()
             self._temp_settings.camera_enabled = self._camera_enabled_check.isChecked()
+            self._temp_settings.ear_threshold = self._ear_threshold_spin.value()
+            self._temp_settings.auto_calibrate = self._auto_calibrate_check.isChecked()
+            self._temp_settings.blink_consecutive_frames = self._blink_frames_spin.value()
+            self._temp_settings.min_blink_duration_ms = self._min_blink_spin.value()
+            self._temp_settings.max_blink_duration_ms = self._max_blink_spin.value()
             self._temp_settings.start_minimized = self._start_minimized_check.isChecked()
             self._temp_settings.show_tray_icon = self._tray_icon_check.isChecked()
             self._temp_settings.enable_notifications = self._notifications_check.isChecked()
+            self._temp_settings.show_status_panel = self._status_panel_check.isChecked()
             self._temp_settings.privacy_acknowledged = self._privacy_ack_check.isChecked()
 
             self.settings = self._temp_settings

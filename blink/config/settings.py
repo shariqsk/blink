@@ -33,11 +33,22 @@ class Settings(BaseModel):
     camera_resolution: CameraResolution = Field(default=CameraResolution.DEFAULT)
     target_fps: int = Field(default=15, ge=5, le=30)
     camera_enabled: bool = Field(default=True)
+    camera_id: int = Field(default=0, ge=0, le=9)
+
+    # Eye detection settings
+    ear_threshold: float = Field(default=0.21, ge=0.1, le=0.4)
+    auto_calibrate: bool = Field(default=True)
+
+    # Blink detection settings
+    blink_consecutive_frames: int = Field(default=2, ge=1, le=5)
+    min_blink_duration_ms: int = Field(default=50, ge=20, le=200)
+    max_blink_duration_ms: int = Field(default=500, ge=200, le=1000)
 
     # UI settings
     start_minimized: bool = Field(default=False)
     show_tray_icon: bool = Field(default=True)
     enable_notifications: bool = Field(default=True)
+    show_status_panel: bool = Field(default=True)
 
     # Privacy settings
     privacy_acknowledged: bool = Field(default=False)
