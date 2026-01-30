@@ -10,4 +10,5 @@ __all__ = [
     "Settings",
     "AlertMode",
     "CameraResolution",
+    "AnimationIntensity",
 ]

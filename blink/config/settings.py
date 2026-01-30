@@ -13,6 +13,14 @@ class AlertMode(str, Enum):
     IRRITATION = "irritation"
 
 
+class AnimationIntensity(str, Enum):
+    """Animation intensity levels."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 class CameraResolution(str, Enum):
     """Camera resolution presets."""
 
@@ -28,6 +36,7 @@ class Settings(BaseModel):
     min_blinks_per_minute: int = Field(default=15, ge=5, le=30)
     alert_mode: AlertMode = Field(default=AlertMode.BLINK)
     animation_duration_ms: int = Field(default=1000, ge=500, le=5000)
+    animation_intensity: AnimationIntensity = Field(default=AnimationIntensity.MEDIUM)
 
     # Camera settings
     camera_resolution: CameraResolution = Field(default=CameraResolution.DEFAULT)

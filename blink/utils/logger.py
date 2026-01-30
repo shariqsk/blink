@@ -33,16 +33,44 @@ def setup_logging(log_dir: Optional[Path] = None, debug: bool = False) -> None:
             colorize=True,
         )
 
-    # File handler with rotation
+    # File handler with rotation (falls back to console if unwritable)
     log_file = Path(log_dir) / "blink.log" if log_dir else Path("blink.log")
-    logger.add(
-        log_file,
-        format=log_format,
-        level="INFO",
-        rotation="10 MB",
-        retention="30 days",
-        compression="zip",
-        enqueue=True,
-    )
+
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Use async queue when allowed (may fail in restricted sandboxes)
+            logger.add(
+                log_file,
+                format=log_format,
+                level="INFO",
+                rotation="10 MB",
+                retention="30 days",
+                compression="zip",
+                enqueue=True,
+            )
+        except PermissionError:
+            # Fall back to synchronous writes if pipe/queue creation is blocked
+            logger.add(
+                log_file,
+                format=log_format,
+                level="INFO",
+                rotation="10 MB",
+                retention="30 days",
+                compression="zip",
+                enqueue=False,
+            )
+    except Exception as exc:
+        # Avoid crashing the app when the OS path isn't writable (e.g., sandboxed runs)
+        logger.add(
+            sys.stderr,
+            format=log_format,
+            level="INFO",
+            colorize=True,
+        )
+        logger.warning(
+            f"File logging disabled; cannot write to {log_file}. "
+            f"Using console logging instead. ({exc})"
+        )
 
     logger.info("Blink! logging initialized")

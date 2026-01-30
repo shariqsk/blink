@@ -5,15 +5,16 @@ from pathlib import Path
 
 from blink.camera.camera_manager import CameraManager
 from blink.config.config_manager import ConfigManager
-from blink.config.settings import Settings
+from blink.config.settings import AnimationIntensity, Settings
 from blink.threading.signal_bus import SignalBus
 from blink.threading.vision_worker import VisionWorker
 from blink.ui.main_window import MainWindow
+from blink.ui.screen_overlay import ScreenOverlay
 from blink.ui.tray_icon import TrayIcon
 from blink.utils.logger import setup_logging
 from blink.utils.platform import get_app_paths
 from loguru import logger
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
 
 
 class BlinkApplication(QApplication):
@@ -92,24 +93,39 @@ class BlinkApplication(QApplication):
 
     def _init_ui(self) -> None:
         """Initialize UI components."""
-        # Main window
-        self.main_window = MainWindow(self.settings)
+        logger.info("Initializing UI components")
 
-        # Connect window signals to vision worker
-        self.main_window.set_camera_status.connect(self.main_window.set_camera_status)
-        self.main_window.set_face_detected.connect(self.main_window.set_face_detected)
-        self.main_window.update_statistics.connect(self.main_window.update_statistics)
+        try:
+            # Main window
+            self.main_window = MainWindow(self.settings)
+            logger.info("Main window created")
 
-        # Show or hide based on settings
-        if self.settings.start_minimized:
-            self.main_window.hide()
-        else:
-            self.main_window.show()
+            # Show or hide based on settings
+            if self.settings.start_minimized:
+                self.main_window.hide()
+            else:
+                self.main_window.show()
 
-        # System tray icon
-        if self.settings.show_tray_icon:
-            self.tray_icon = TrayIcon(self.main_window)
-            logger.info("Tray icon initialized")
+            # Screen overlay for animations
+            self.screen_overlay = ScreenOverlay(self.main_window)
+            intensity = AnimationIntensity(self.settings.animation_intensity)
+            self.screen_overlay.set_intensity(intensity)
+            logger.info("Screen overlay ready")
+
+            # Connect animation request signals
+            self.signal_bus.animation_requested.connect(self._on_animation_requested)
+
+            # System tray icon
+            if self.settings.show_tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
+                self.tray_icon = TrayIcon(self.main_window, self.screen_overlay)
+                logger.info("Tray icon initialized")
+            elif self.settings.show_tray_icon:
+                logger.warning("System tray not available; tray icon disabled")
+
+            logger.info("UI initialization complete")
+        except Exception:
+            logger.exception("UI initialization failed")
+            raise
 
     def _on_blink_detected(self) -> None:
         """Handle blink detected signal.
@@ -178,6 +194,24 @@ class BlinkApplication(QApplication):
         logger.error(f"Vision worker error: {error_message}")
         self.signal_bus.error_occurred.emit(error_message)
 
+    def _on_animation_requested(self, mode: str) -> None:
+        """Handle animation request signal.
+
+        Args:
+            mode: Animation mode ('blink' or 'irritation').
+        """
+        if not self.screen_overlay:
+            return
+
+        logger.info(f"Animation requested: {mode}")
+
+        if mode == "blink":
+            self.screen_overlay.play_blink()
+        elif mode == "irritation":
+            self.screen_overlay.play_irritation()
+        else:
+            logger.warning(f"Unknown animation mode: {mode}")
+
     def run(self) -> int:
         """Run application event loop.
 
@@ -190,6 +224,10 @@ class BlinkApplication(QApplication):
     def cleanup(self) -> None:
         """Clean up resources before exit."""
         logger.info("Cleaning up resources")
+
+        # Stop any active animations
+        if hasattr(self, 'screen_overlay') and self.screen_overlay:
+            self.screen_overlay.stop_animation()
 
         # Stop vision worker
         if self.vision_worker.is_running:

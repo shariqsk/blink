@@ -2,6 +2,7 @@
 
 from blink.config.settings import (
     AlertMode,
+    AnimationIntensity,
     CameraResolution,
     Settings,
 )
@@ -12,6 +13,7 @@ DEFAULT_SETTINGS = Settings(
     min_blinks_per_minute=15,
     alert_mode=AlertMode.BLINK,
     animation_duration_ms=1000,
+    animation_intensity=AnimationIntensity.MEDIUM,
     # Camera settings
     camera_resolution=CameraResolution.DEFAULT,
     target_fps=15,

@@ -2,21 +2,24 @@
 
 from loguru import logger
 
-from PyQt6.QtGui import QAction, QIcon, QPalette
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QMenu, QSystemTrayIcon, QWidget
 
 
 class TrayIcon(QSystemTrayIcon):
     """System tray icon with menu."""
 
-    def __init__(self, parent: QWidget):
+    def __init__(self, parent: QWidget, overlay=None):
         """Initialize tray icon.
 
         Args:
             parent: Parent widget (main window).
+            overlay: ScreenOverlay instance for animation control.
         """
         super().__init__(parent)
         self.parent_window = parent
+        self.overlay = overlay
 
         self._init_icon()
         self._init_menu()
@@ -64,6 +67,13 @@ class TrayIcon(QSystemTrayIcon):
 
         menu.addSeparator()
 
+        # Animation control
+        if self.overlay:
+            self._stop_animation_action = QAction("Stop Animation", self)
+            self._stop_animation_action.triggered.connect(self._stop_animation)
+            menu.addAction(self._stop_animation_action)
+            menu.addSeparator()
+
         # Quit
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self._quit_app)
@@ -94,6 +104,12 @@ class TrayIcon(QSystemTrayIcon):
         if hasattr(self.parent_window, "set_monitoring_state"):
             self.parent_window.set_monitoring_state(False)
         logger.info("Monitoring stopped from tray")
+
+    def _stop_animation(self) -> None:
+        """Stop active animation via tray."""
+        if self.overlay and self.overlay.is_active:
+            self.overlay.stop_animation()
+            logger.info("Animation stopped from tray")
 
     def _quit_app(self) -> None:
         """Quit application."""

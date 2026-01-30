@@ -13,6 +13,7 @@ class AlertEngine(QObject):
 
     alert_triggered = pyqtSignal()
     alert_cleared = pyqtSignal()
+    animation_requested = pyqtSignal(str)
 
     def __init__(self, settings: Settings):
         """Initialize alert engine.
@@ -65,6 +66,7 @@ class AlertEngine(QObject):
             self._last_alert_time = datetime.now()
             logger.info("Alert triggered")
             self.alert_triggered.emit()
+            self.animation_requested.emit(self.settings.alert_mode.value)
         elif not should_alert and self._alert_active:
             self._alert_active = False
             logger.info("Alert cleared")

@@ -15,6 +15,7 @@ class SignalBus(QObject):
     # Alert signals
     alert_triggered = pyqtSignal()
     alert_cleared = pyqtSignal()
+    animation_requested = pyqtSignal(str)
 
     # Control signals
     start_monitoring = pyqtSignal()
@@ -24,11 +25,6 @@ class SignalBus(QObject):
     # Error signals
     error_occurred = pyqtSignal(str)
 
-    # Singleton pattern
-    _instance = None
-
-    def __new__(cls) -> "SignalBus":
-        """Get singleton instance."""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+    def __init__(self) -> None:
+        """Initialize QObject base."""
+        super().__init__()
