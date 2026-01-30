@@ -1,38 +1,26 @@
-# Blink! - Requirements
+# Blink! - Core Dependencies
 
-# Core UI Framework
+# UI Framework
 PyQt6==6.7.0
-
-# Computer Vision & ML
-mediapipe==0.10.14
-opencv-python==4.9.0.80
 
 # Cross-platform paths
 platformdirs==4.2.2
 
-# Configuration & Data
+# Configuration & Validation
 pydantic==2.7.4
 pydantic-settings==2.3.4
 
 # Logging
 loguru==0.7.2
 
-# Testing (optional, for development)
+# Development Dependencies (optional)
 pytest==8.2.2
 pytest-qt==4.2.0
-pytest-asyncio==0.23.7
 pytest-cov==5.0.0
-
-# Type Hinting & Linting (optional, for development)
 mypy==1.10.1
-types-requests==2.32.0.20240622
-
-# Code Quality (optional, for development)
 black==24.4.2
 ruff==0.4.7
 
-# Build/Package (optional, for distribution)
+# Build (optional)
 PyInstaller==6.7.0
-setuptools==70.1.0
-wheel==0.43.0
 build==1.2.1
