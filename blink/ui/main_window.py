@@ -89,15 +89,21 @@ class MainWindow(QMainWindow):
         if not self._camera_combo:
             return
         self._camera_combo.clear()
-        cameras = self._refresh_available_cameras()
+        # Prefer the cached list from app startup (same one Settings dialog sees)
+        cameras = self._available_cameras or []
         if not cameras:
+            cameras = self.camera_manager.get_camera_info()
+        logger.info(f"Main window camera enumerate -> {cameras}")
+        if cameras:
+            self._available_cameras = cameras
+        else:
             # Fall back to generic IDs so user can still select a device
             cameras = [(i, f"Camera {i}") for i in range(0, 3)]
-            self._camera_combo.setEnabled(True)
-        else:
-            self._camera_combo.setEnabled(True)
+        self._camera_combo.setEnabled(True)
+        self._camera_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         for cam_id, cam_name in cameras:
-            self._camera_combo.addItem(cam_name, cam_id)
+            display = cam_name or f"Camera {cam_id}"
+            self._camera_combo.addItem(display, cam_id)
         # Set current selection
         idx = self._camera_combo.findData(self.settings.camera_id)
         if idx >= 0:
@@ -106,6 +112,7 @@ class MainWindow(QMainWindow):
             self._camera_combo.setCurrentIndex(0)
             self.settings.camera_id = self._camera_combo.currentData()
             self.config_manager.save(self.settings)
+        self._camera_combo.setMinimumWidth(200)
     def _init_ui(self) -> None:
         """Initialize UI components with a high-contrast, non-overlapping layout."""
         self.setWindowTitle("Blink! - Eye Health Monitor")
@@ -604,9 +611,8 @@ class MainWindow(QMainWindow):
         logger.info(f"Camera {status} via main window toggle")
 
     def _refresh_available_cameras(self) -> list[tuple[int, str]]:
-        """Refresh camera list (cached, but re-enumerate if empty)."""
-        if not self._available_cameras:
-            self._available_cameras = self.camera_manager.get_camera_info()
+        """Refresh and cache camera list."""
+        self._available_cameras = self.camera_manager.get_camera_info()
         return self._available_cameras
 
     def _refresh_camera_list(self) -> None:
