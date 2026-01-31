@@ -285,7 +285,7 @@ class BlinkApplication(QApplication):
         """Handle animation request signal.
 
         Args:
-            mode: Animation mode ('blink' or 'irritation').
+            mode: Animation mode ('blink', 'irritation', or 'popup').
         """
         if not self.screen_overlay:
             return
@@ -296,6 +296,8 @@ class BlinkApplication(QApplication):
             self.screen_overlay.play_blink()
         elif mode == "irritation":
             self.screen_overlay.play_irritation()
+        elif mode == "popup":
+            self.screen_overlay.play_popup()
         else:
             logger.warning(f"Unknown animation mode: {mode}")
 

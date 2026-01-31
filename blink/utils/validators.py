@@ -69,7 +69,7 @@ def validate_alert_mode(mode: str) -> str:
     Raises:
         ValueError: If mode is invalid.
     """
-    valid = {"blink", "irritation"}
+    valid = {"blink", "irritation", "popup"}
     if mode not in valid:
         raise ValueError(f"Invalid mode. Must be one of: {', '.join(valid)}")
     return mode

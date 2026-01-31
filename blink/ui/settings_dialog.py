@@ -281,6 +281,7 @@ class SettingsDialog(QDialog):
         self._alert_mode_combo = QComboBox()
         self._alert_mode_combo.addItem("Blink animation (gentle)", AlertMode.BLINK)
         self._alert_mode_combo.addItem("Irritation animation (attention)", AlertMode.IRRITATION)
+        self._alert_mode_combo.addItem("Popup reminder (card only)", AlertMode.POPUP)
         current_mode = self._temp_settings.alert_mode
         if isinstance(current_mode, str):
             try:

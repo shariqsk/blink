@@ -30,6 +30,7 @@ class AnimationMode(str, Enum):
 
     BLINK = "blink"
     IRRITATION = "irritation"
+    POPUP = "popup"
 
 
 class ScreenOverlay(QWidget):
@@ -39,6 +40,7 @@ class ScreenOverlay(QWidget):
     _red_tint = 0.0
     _blink_level = 0.0
     _pulse_level = 0.0
+    _card_only = False
     _shake_offset_x = 0
     _shake_offset_y = 0
 
@@ -64,6 +66,7 @@ class ScreenOverlay(QWidget):
         self._animation_active = False
         self._blink_count = 0
         self._irritation_ended = False
+        self._card_only = False
 
         self.setStyleSheet("background: transparent;")
 
@@ -168,9 +171,11 @@ class ScreenOverlay(QWidget):
         width = self.width()
         height = self.height()
 
+        show_backdrop = not self._card_only
+
         # Gentle vignette that never blocks content
         backdrop_strength = max(0.0, 1.0 - self._opacity)
-        if backdrop_strength > 0:
+        if show_backdrop and backdrop_strength > 0:
             center_point = self.rect().center()
             vignette = QRadialGradient(QPointF(center_point), max(width, height) * 0.75)
             vignette.setColorAt(0.0, QColor(12, 16, 30, int(80 * backdrop_strength)))
@@ -178,7 +183,7 @@ class ScreenOverlay(QWidget):
             painter.fillRect(self.rect(), vignette)
 
         # Soft red edge glow for irritation mode only; fades gently
-        if self._current_mode == AnimationMode.IRRITATION and self._red_tint > 0:
+        if show_backdrop and self._current_mode == AnimationMode.IRRITATION and self._red_tint > 0:
             tint_alpha = int(140 * self._red_tint)
             edge = QLinearGradient(0, 0, width, 0)
             edge.setColorAt(0.0, QColor(255, 82, 82, 0))
@@ -195,8 +200,9 @@ class ScreenOverlay(QWidget):
             QPointF(card_rect.left(), card_rect.top()),
             QPointF(card_rect.left(), card_rect.bottom()),
         )
-        card_bg.setColorAt(0.0, QColor(15, 23, 42, 230))
-        card_bg.setColorAt(1.0, QColor(17, 24, 39, 210))
+        # Slightly brighter for visibility
+        card_bg.setColorAt(0.0, QColor(18, 27, 52, 240))
+        card_bg.setColorAt(1.0, QColor(20, 30, 58, 225))
 
         painter.setPen(QColor(255, 255, 255, 35))
         painter.setBrush(card_bg)
@@ -263,10 +269,13 @@ class ScreenOverlay(QWidget):
         painter.setFont(title_font)
 
         title = "Blink break"
-        subtitle = "Gently close both eyes twice to keep them hydrated."
+        subtitle = "Close both eyes twice and stare at something 20 feet away."
         if self._current_mode == AnimationMode.IRRITATION:
             title = "Eyes need a pause"
             subtitle = "Look away 20 seconds and blink a few times to refresh."
+        elif self._current_mode == AnimationMode.POPUP:
+            title = "Quick blink"
+            subtitle = "Blink 2–3 times now to keep your eyes comfortable."
 
         painter.drawText(
             QRect(text_left, card_rect.top() + inset + 2, card_rect.width() - eye_width - inset * 2, 26),
@@ -305,6 +314,7 @@ class ScreenOverlay(QWidget):
         self._animation_active = True
         self._blink_count = 0
         self._irritation_ended = False
+        self._card_only = False
 
         self.show()
         self._pulse_anim.stop()
@@ -320,6 +330,7 @@ class ScreenOverlay(QWidget):
         self._current_mode = AnimationMode.IRRITATION
         self._animation_active = True
         self._irritation_ended = False
+        self._card_only = False
 
         self.show()
         self._pulse_anim.stop()
@@ -327,9 +338,27 @@ class ScreenOverlay(QWidget):
         self._start_irritation()
         logger.debug("Irritation animation started")
 
+    def play_popup(self):
+        """Play card-only popup blink reminder (no dimming)."""
+        if self._animation_active:
+            self.stop_animation()
+
+        self._current_mode = AnimationMode.POPUP
+        self._animation_active = True
+        self._blink_count = 0
+        self._card_only = True
+        self._irritation_ended = False
+
+        self._opacity = 1.0  # ensure no backdrop dim
+        self.show()
+        self._pulse_anim.stop()
+        self._pulse_anim.start()
+        self._next_blink()
+        logger.debug("Popup animation started")
+
     def _next_blink(self):
         """Play next blink cycle."""
-        if not self._animation_active or self._current_mode != AnimationMode.BLINK:
+        if not self._animation_active or self._current_mode not in (AnimationMode.BLINK, AnimationMode.POPUP):
             return
 
         if self._blink_count >= self._get_blink_cycles():
@@ -340,11 +369,15 @@ class ScreenOverlay(QWidget):
 
         fade_out, hold, fade_in = self._get_blink_timings()
 
-        self._opacity_anim.stop()
-        self._opacity_anim.setDuration(fade_out)
-        self._opacity_anim.setStartValue(self._opacity)
-        self._opacity_anim.setEndValue(self._get_blink_dim_level())
-        self._opacity_anim.start()
+        do_dim = not self._card_only
+        if do_dim:
+            self._opacity_anim.stop()
+            self._opacity_anim.setDuration(fade_out)
+            self._opacity_anim.setStartValue(self._opacity)
+            self._opacity_anim.setEndValue(self._get_blink_dim_level())
+            self._opacity_anim.start()
+        else:
+            self._opacity = 1.0
 
         self._blink_anim.stop()
         self._blink_anim.setDuration(fade_out)
@@ -359,11 +392,14 @@ class ScreenOverlay(QWidget):
         if not self._animation_active:
             return
 
-        self._opacity_anim.stop()
-        self._opacity_anim.setDuration(duration)
-        self._opacity_anim.setStartValue(self._opacity)
-        self._opacity_anim.setEndValue(1.0)
-        self._opacity_anim.start()
+        if not self._card_only:
+            self._opacity_anim.stop()
+            self._opacity_anim.setDuration(duration)
+            self._opacity_anim.setStartValue(self._opacity)
+            self._opacity_anim.setEndValue(1.0)
+            self._opacity_anim.start()
+        else:
+            self._opacity = 1.0
 
         self._blink_anim.stop()
         self._blink_anim.setDuration(duration)
@@ -454,6 +490,7 @@ class ScreenOverlay(QWidget):
         self._red_tint = 0.0
         self._blink_level = 0.0
         self._pulse_level = 0.0
+        self._card_only = False
         self._shake_offset_x = 0
         self._shake_offset_y = 0
 
@@ -461,18 +498,24 @@ class ScreenOverlay(QWidget):
 
     def _get_blink_cycles(self) -> int:
         """Get number of blink cycles based on intensity."""
-        return {AnimationIntensity.LOW: 2, AnimationIntensity.MEDIUM: 3, AnimationIntensity.HIGH: 3}[
+        base = {AnimationIntensity.LOW: 4, AnimationIntensity.MEDIUM: 5, AnimationIntensity.HIGH: 6}[
             self._intensity
         ]
+        # Popup stays brief by design
+        if self._card_only:
+            return 3
+        return base
 
     def _get_blink_timings(self) -> tuple[int, int, int]:
         """Get blink timing tuple (fade_out, hold, fade_in) in ms."""
+        if self._card_only:
+            return 160, 80, 160
         if self._intensity == AnimationIntensity.LOW:
-            return 180, 80, 180
+            return 200, 90, 200
         elif self._intensity == AnimationIntensity.MEDIUM:
-            return 150, 70, 150
+            return 180, 90, 180
         else:
-            return 120, 60, 120
+            return 150, 80, 150
 
     def _get_blink_interval(self) -> int:
         """Get interval between blinks in ms."""
@@ -483,18 +526,20 @@ class ScreenOverlay(QWidget):
     def _get_blink_dim_level(self) -> float:
         """Get dim level for blink (0.0-1.0)."""
         # Keep screen visible; gentle dim instead of black flash
+        if self._card_only:
+            return 1.0
         return {
-            AnimationIntensity.LOW: 0.94,
-            AnimationIntensity.MEDIUM: 0.9,
-            AnimationIntensity.HIGH: 0.88,
+            AnimationIntensity.LOW: 0.86,
+            AnimationIntensity.MEDIUM: 0.82,
+            AnimationIntensity.HIGH: 0.78,
         }[self._intensity]
 
     def _get_irritation_duration(self) -> int:
         """Get total duration of irritation in ms."""
         return {
-            AnimationIntensity.LOW: 800,
-            AnimationIntensity.MEDIUM: 1000,
-            AnimationIntensity.HIGH: 1200,
+            AnimationIntensity.LOW: 1400,
+            AnimationIntensity.MEDIUM: 1700,
+            AnimationIntensity.HIGH: 2000,
         }[self._intensity]
 
     def _get_irritation_strength(self) -> tuple[int, float]:

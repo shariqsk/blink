@@ -9,6 +9,7 @@ class AlertMode(str, Enum):
 
     BLINK = "blink"
     IRRITATION = "irritation"
+    POPUP = "popup"
 
 
 class AnimationIntensity(str, Enum):
