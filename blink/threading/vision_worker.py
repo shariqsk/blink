@@ -78,6 +78,7 @@ class VisionWorker(QObject):
         self._last_stats_time = time()
         self._binks_in_last_minute = 0
         self._preview_skip = 0
+        self._max_camera_id_probe = 3
 
     def initialize(self) -> None:
         """Initialize vision components."""
@@ -111,6 +112,25 @@ class VisionWorker(QObject):
             except Exception as exc:
                 logger.error(f"Warm start failed: {exc}")
 
+    def _open_camera_with_fallback(self) -> bool:
+        """Try requested camera first, then fall back to first available index."""
+        if self.camera_manager.open_camera(
+            camera_id=self.camera_id,
+            resolution=self.resolution,
+        ):
+            return True
+
+        logger.warning(f"Primary camera {self.camera_id} failed, probing fallbacks")
+        for cid in range(0, self._max_camera_id_probe + 1):
+            if cid == self.camera_id:
+                continue
+            if self.camera_manager.open_camera(camera_id=cid, resolution=self.resolution):
+                self.camera_id = cid
+                logger.info(f"Fell back to camera {cid}")
+                return True
+        logger.error("No available camera found during fallback probe")
+        return False
+
     def start_monitoring(self) -> None:
         """Start vision monitoring."""
         self._mutex.lock()
@@ -119,11 +139,7 @@ class VisionWorker(QObject):
                 return
 
             if not self.camera_manager.is_open():
-                # Try to open camera
-                if not self.camera_manager.open_camera(
-                    camera_id=self.camera_id,
-                    resolution=self.resolution,
-                ):
+                if not self._open_camera_with_fallback():
                     self.error_occurred.emit("Failed to open camera")
                     return
 
@@ -221,8 +237,8 @@ class VisionWorker(QObject):
                 face_result["right_eye"],
             )
 
-            # Emit preview every ~3 frames to reduce UI load
-            self._preview_skip = (self._preview_skip + 1) % 3
+            # Emit preview every ~2 frames to keep UI snappy while monitoring
+            self._preview_skip = (self._preview_skip + 1) % 2
             if self._preview_skip == 0:
                 self.frame_preview.emit(frame)
 

@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self._face_detected = False
         self._calibrating = False
         self._preview_frame = None
+        self._preview_enabled = False
 
         # Current metrics
         self._current_ear = 0.0
@@ -465,24 +466,37 @@ class MainWindow(QMainWindow):
 
     def _toggle_preview(self) -> None:
         """Toggle lightweight preview without full monitoring."""
-        if self._preview_timer.isActive():
-            self._preview_timer.stop()
+        if self._preview_enabled:
+            self._preview_enabled = False
             self._preview_button.setText("Preview camera")
+            if self._preview_timer.isActive():
+                self._preview_timer.stop()
             # If monitoring is not running, release the camera when preview stops.
             if not self._monitoring and self.camera_manager.is_open():
                 self.camera_manager.close_camera()
             return
 
+        # Enable preview
+        self._preview_enabled = True
+        self._preview_button.setText("Stop preview")
+
+        if self._monitoring:
+            # When monitoring is running, we reuse worker-emitted preview frames;
+            # nothing else to start here.
+            return
+
+        # Preview-only mode: open camera and poll light frames
         if not self.camera_manager.is_open():
             self.camera_manager.open_camera(
                 camera_id=self.settings.camera_id,
                 resolution=self.settings.get_resolution_tuple(),
             )
         self._preview_timer.start(150)  # ~6 fps
-        self._preview_button.setText("Stop preview")
 
     def _capture_preview_frame(self) -> None:
         """Capture single frame for preview."""
+        if not self._preview_enabled:
+            return
         frame = self.camera_manager.capture_frame()
         if frame is not None:
             self.show_preview(frame)
@@ -595,7 +609,9 @@ class MainWindow(QMainWindow):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-            self._preview_label.setPixmap(pix)
-            self._preview_label.setText("")
+            # Only display when preview is enabled or monitoring is active
+            if self._preview_enabled or self._monitoring:
+                self._preview_label.setPixmap(pix)
+                self._preview_label.setText("")
         except Exception as exc:
             logger.debug(f"Preview update failed: {exc}")
