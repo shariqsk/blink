@@ -34,10 +34,24 @@ class FaceDetector:
     LEFT_EYE_INDICES = [33, 160, 158, 133, 153, 144]
     RIGHT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
 
-    def __init__(self, max_faces: int = 1, refine_landmarks: bool = True):
+    def __init__(
+        self,
+        max_faces: int = 1,
+        refine_landmarks: bool = True,
+        min_detection_confidence: float = 0.3,
+        min_presence_confidence: float = 0.3,
+        min_tracking_confidence: float = 0.3,
+        use_fallback_mesh: bool = True,
+    ):
         self.max_faces = max_faces
         self.refine_landmarks = refine_landmarks
+        self.min_detection_confidence = min_detection_confidence
+        self.min_presence_confidence = min_presence_confidence
+        self.min_tracking_confidence = min_tracking_confidence
+        self.use_fallback_mesh = use_fallback_mesh
+
         self._landmarker: Optional[mp_vision.FaceLandmarker] = None
+        self._fallback_mesh: Optional[Any] = None  # mp.solutions.face_mesh.FaceMesh, created lazily
 
     def initialize(self) -> None:
         """Initialize FaceLandmarker using the packaged task asset."""
@@ -52,6 +66,9 @@ class FaceDetector:
                 num_faces=self.max_faces,
                 output_face_blendshapes=False,
                 output_facial_transformation_matrixes=False,
+                min_face_detection_confidence=self.min_detection_confidence,
+                min_face_presence_confidence=self.min_presence_confidence,
+                min_tracking_confidence=self.min_tracking_confidence,
             )
             self._landmarker = mp_vision.FaceLandmarker.create_from_options(opts)
             logger.info("MediaPipe Tasks FaceLandmarker initialized")
@@ -96,17 +113,18 @@ class FaceDetector:
         if not self._landmarker:
             raise RuntimeError("FaceDetector not initialized. Call initialize() first.")
 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        enhanced_frame = self._preprocess_frame(frame)
+        frame_rgb = cv2.cvtColor(enhanced_frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
         result = self._landmarker.detect(mp_image)
 
         if not result.face_landmarks:
-            return None
+            return self._process_with_fallback(enhanced_frame, frame)
 
         # Select largest face
         face = self._select_largest_face(frame, result.face_landmarks)
         if face is None:
-            return None
+            return self._process_with_fallback(enhanced_frame, frame)
 
         left_eye = self._extract_eye(face, self.LEFT_EYE_INDICES)
         right_eye = self._extract_eye(face, self.RIGHT_EYE_INDICES)
@@ -147,3 +165,71 @@ class FaceDetector:
             self._landmarker.close()
             self._landmarker = None
             logger.info("FaceLandmarker cleaned up")
+        if self._fallback_mesh:
+            # FaceMesh provides a close() for explicit resource release
+            try:
+                self._fallback_mesh.close()
+            except Exception:
+                pass
+            self._fallback_mesh = None
+            logger.info("Fallback FaceMesh cleaned up")
+
+    def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Boost contrast on dark frames to help detection in low light."""
+        gray_mean = float(frame.mean())
+        if gray_mean >= 60.0:
+            return frame
+
+        # Apply CLAHE on the L channel for gentle brightening without blowing highlights
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_eq = clahe.apply(l)
+        lab_eq = cv2.merge((l_eq, a, b))
+        return cv2.cvtColor(lab_eq, cv2.COLOR_LAB2BGR)
+
+    def _ensure_fallback_mesh(self) -> None:
+        """Lazily create a FaceMesh fallback when Tasks model misses faces."""
+        if self._fallback_mesh or not self.use_fallback_mesh:
+            return
+        try:
+            self._fallback_mesh = mp.solutions.face_mesh.FaceMesh(
+                static_image_mode=True,
+                max_num_faces=self.max_faces,
+                refine_landmarks=True,
+                min_detection_confidence=self.min_detection_confidence,
+                min_tracking_confidence=self.min_tracking_confidence,
+            )
+            logger.info("Fallback MediaPipe FaceMesh initialized")
+        except Exception as exc:
+            logger.warning(f"Fallback FaceMesh init failed: {exc}")
+            self._fallback_mesh = None
+
+    def _process_with_fallback(self, enhanced_frame: np.ndarray, original_frame: np.ndarray) -> Optional[dict]:
+        """Try a lighter-weight fallback detector when the Tasks model finds no face."""
+        if not self.use_fallback_mesh:
+            return None
+
+        self._ensure_fallback_mesh()
+        if self._fallback_mesh is None:
+            return None
+
+        frame_rgb = cv2.cvtColor(enhanced_frame, cv2.COLOR_BGR2RGB)
+        mesh_result = self._fallback_mesh.process(frame_rgb)
+        if not mesh_result.multi_face_landmarks:
+            return None
+
+        faces = [lm.landmark for lm in mesh_result.multi_face_landmarks]
+        face = self._select_largest_face(original_frame, faces)
+        if face is None:
+            return None
+
+        left_eye = self._extract_eye(face, self.LEFT_EYE_INDICES)
+        right_eye = self._extract_eye(face, self.RIGHT_EYE_INDICES)
+
+        return FaceResult(
+            landmarks=face,
+            left_eye=left_eye,
+            right_eye=right_eye,
+            frame_shape=original_frame.shape,
+        ).__dict__
