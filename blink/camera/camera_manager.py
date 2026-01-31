@@ -1,7 +1,7 @@
 """Camera capture and management."""
 
 from collections import deque
-from typing import Optional
+from typing import Optional, Tuple, List
 
 import cv2
 from loguru import logger
@@ -154,8 +154,94 @@ class CameraManager(QObject):
         Returns:
             List of available camera IDs.
         """
-        available = []
-        for i in range(10):  # Check first 10 cameras
+        return [cid for cid, _ in self.get_camera_info()]
+
+    def get_camera_info(self) -> List[Tuple[int, str]]:
+        """Enumerate camera IDs with friendly names on Windows (DirectShow); fallback to numeric IDs."""
+        names: List[Tuple[int, str]] = []
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            ole32 = ctypes.OleDLL("ole32")
+            ole32.CoInitialize(None)
+
+            CLSCTX_INPROC_SERVER = 1
+            IID_ICreateDevEnum = ctypes.c_char_p(b"\x2c\x00\x1f\x3c\x4b\x3f\x11\xd2\x9e\xe1\x00\xc0\x4f\xb6\x8d\x60")
+            CLSID_SystemDeviceEnum = ctypes.c_char_p(b"\x62\x7b\x93\xa0\x7c\x10\x11\xd0\xa5\x49\x00\xa0\xc9\x22\x31\x96")
+            CLSID_VideoInputDeviceCategory = ctypes.c_char_p(b"\x86\xd4\xe2\x80\x2d\xe8\x11\xd0\xac\x9d\x00\xaa\x00\x64\x8f\xb5")
+
+            class ICreateDevEnum(ctypes.Structure):
+                pass
+
+            class IEnumMoniker(ctypes.Structure):
+                pass
+
+            class IMoniker(ctypes.Structure):
+                pass
+
+            ICreateDevEnum._fields_ = [("lpVtbl", ctypes.POINTER(ctypes.c_void_p))]
+            IEnumMoniker._fields_ = [("lpVtbl", ctypes.POINTER(ctypes.c_void_p))]
+            IMoniker._fields_ = [("lpVtbl", ctypes.POINTER(ctypes.c_void_p))]
+
+            # CoCreateInstance
+            p_dev_enum = ctypes.POINTER(ICreateDevEnum)()
+            ole32.CoCreateInstance.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_ulong,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+            ]
+            res = ole32.CoCreateInstance(
+                CLSID_SystemDeviceEnum,
+                None,
+                CLSCTX_INPROC_SERVER,
+                IID_ICreateDevEnum,
+                ctypes.byref(p_dev_enum),
+            )
+            if res != 0 or not p_dev_enum:
+                raise RuntimeError("CoCreateInstance failed")
+
+            # CreateClassEnumerator
+            enum_moniker = ctypes.POINTER(IEnumMoniker)()
+            create_enum = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong)(
+                p_dev_enum.contents.lpVtbl[3]
+            )
+            if create_enum(p_dev_enum, CLSID_VideoInputDeviceCategory, ctypes.byref(enum_moniker), 0) != 0:
+                raise RuntimeError("CreateClassEnumerator failed")
+
+            fetch = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.POINTER(IMoniker)), ctypes.POINTER(ctypes.c_ulong))(enum_moniker.contents.lpVtbl[3])
+            prop_bag_clsid = ctypes.c_char_p(b"\x55\x12\xd0\x70\xaf\x9b\x11\xd0\x8c\xf1\x00\xc0\x4f\xc2\x8c\x0a")
+            id_count = 0
+            while True:
+                moniker = ctypes.POINTER(IMoniker)()
+                fetched = ctypes.c_ulong()
+                if fetch(enum_moniker, 1, ctypes.byref(moniker), ctypes.byref(fetched)) != 0 or not fetched.value:
+                    break
+                name = f"Camera {id_count}"
+                try:
+                    bind_ctx = ctypes.c_void_p()
+                    ole32.CreateBindCtx(0, ctypes.byref(bind_ctx))
+                    display_name = ctypes.c_wchar_p()
+                    moniker.contents.lpVtbl[5](moniker, bind_ctx, None, ctypes.byref(display_name))
+                    if display_name and display_name.value:
+                        name = display_name.value
+                except Exception:
+                    pass
+                names.append((id_count, name))
+                id_count += 1
+            logger.info(f"Available cameras: {names}")
+            ole32.CoUninitialize()
+            if names:
+                return names
+        except Exception as exc:
+            logger.debug(f"Camera name enumeration failed, using numeric IDs. ({exc})")
+
+        # Fallback numeric check
+        available: List[int] = []
+        for i in range(5):
             try:
                 cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
                 if cap.isOpened():
@@ -163,6 +249,4 @@ class CameraManager(QObject):
                     cap.release()
             except Exception:
                 pass
-
-        logger.info(f"Available cameras: {available}")
-        return available
+        return [(cid, f"Camera {cid}") for cid in available]

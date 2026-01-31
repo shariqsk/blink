@@ -25,6 +25,7 @@ class VisionWorker(QThread):
     statistics_updated = pyqtSignal(dict)
     face_detected = pyqtSignal(bool)
     camera_status_changed = pyqtSignal(bool)
+    frame_preview = pyqtSignal(object)  # Emits small BGR frame for UI preview
     calibration_progress = pyqtSignal(int)  # Emits percentage
     calibration_complete = pyqtSignal(float)
 
@@ -75,6 +76,7 @@ class VisionWorker(QThread):
         self._last_face_detected = False
         self._last_stats_time = time()
         self._binks_in_last_minute = 0
+        self._preview_skip = 0
 
     def initialize(self) -> None:
         """Initialize vision components."""
@@ -205,6 +207,11 @@ class VisionWorker(QThread):
                 face_result["left_eye"],
                 face_result["right_eye"],
             )
+
+            # Emit preview every ~3 frames to reduce UI load
+            self._preview_skip = (self._preview_skip + 1) % 3
+            if self._preview_skip == 0:
+                self.frame_preview.emit(frame)
 
             # Calibrate if in calibration mode
             if self._calibrating:

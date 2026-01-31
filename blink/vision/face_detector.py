@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import resources
+from pathlib import Path
 from typing import Optional, Any
+import urllib.request
 
 import cv2
 import mediapipe as mp
@@ -43,7 +45,7 @@ class FaceDetector:
             return
 
         try:
-            model_asset_path = self._get_packaged_model_path()
+            model_asset_path = self._get_model_path()
             base_opts = mp_tasks.BaseOptions(model_asset_path=model_asset_path)
             opts = mp_vision.FaceLandmarkerOptions(
                 base_options=base_opts,
@@ -56,17 +58,37 @@ class FaceDetector:
         except Exception as exc:  # pragma: no cover
             raise RuntimeError(
                 f"Failed to initialize MediaPipe FaceLandmarker: {exc}. "
-                "Ensure mediapipe>=0.10.30 is installed."
+                "Ensure mediapipe>=0.10.30 is installed and model download is allowed."
             ) from exc
 
-    def _get_packaged_model_path(self) -> str:
-        """Locate the face_landmarker.task asset inside the mediapipe package."""
+    def _get_model_path(self) -> str:
+        """Locate or download the face_landmarker.task asset."""
+        # 1) Try bundled path
         try:
             with resources.path("mediapipe.modules.face_landmarker", "face_landmarker.task") as p:
-                return str(p)
-        except FileNotFoundError as exc:
+                if p.exists():
+                    return str(p)
+        except Exception:
+            pass
+
+        # 2) Local cache under user data
+        cache_dir = Path.home() / ".blink_runtime" / "models"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        local_path = cache_dir / "face_landmarker.task"
+        if local_path.exists():
+            return str(local_path)
+
+        # 3) Download from official CDN
+        url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+        try:
+            logger.info("Downloading face_landmarker.task (first run only)...")
+            urllib.request.urlretrieve(url, local_path)
+            logger.info(f"Model downloaded to {local_path}")
+            return str(local_path)
+        except Exception as exc:
             raise RuntimeError(
-                "Could not find bundled face_landmarker.task inside the mediapipe package."
+                "face_landmarker.task not found and download failed. "
+                "Check your network or place the file at ~/.blink_runtime/models/face_landmarker.task"
             ) from exc
 
     def process_frame(self, frame: np.ndarray) -> Optional[dict]:

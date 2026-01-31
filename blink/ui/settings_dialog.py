@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (
 class SettingsDialog(QDialog):
     """Settings configuration dialog."""
 
-    def __init__(self, settings: Settings, parent=None, available_cameras: list[int] | None = None):
+    def __init__(self, settings: Settings, parent=None, available_cameras: list[tuple[int, str]] | None = None):
         super().__init__(parent)
         self.settings = settings
         self._temp_settings: Settings = settings.model_copy()
@@ -223,9 +223,9 @@ class SettingsDialog(QDialog):
         # Camera selector
         self._camera_combo = QComboBox()
         if not self.available_cameras:
-            self.available_cameras = list(range(0, 3))
-        for cam_id in self.available_cameras:
-            self._camera_combo.addItem(f"Camera {cam_id}", cam_id)
+            self.available_cameras = [(i, f"Camera {i}") for i in range(0, 3)]
+        for cam_id, cam_name in self.available_cameras:
+            self._camera_combo.addItem(cam_name, cam_id)
         current_cam = self._temp_settings.camera_id
         cam_index = self._camera_combo.findData(current_cam)
         if cam_index >= 0:

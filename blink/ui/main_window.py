@@ -8,7 +8,7 @@ from blink.threading.signal_bus import SignalBus
 from blink.ui.settings_dialog import SettingsDialog
 from blink.utils.diagnostics import export_diagnostics
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtGui import QKeySequence, QShortcut, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self._camera_active = False
         self._face_detected = False
         self._calibrating = False
+        self._preview_frame = None
 
         # Current metrics
         self._current_ear = 0.0
@@ -60,6 +61,8 @@ class MainWindow(QMainWindow):
         # Statistics update timer
         self._stats_timer = QTimer(self)
         self._stats_timer.timeout.connect(self._update_statistics_display)
+        self._preview_timer = QTimer(self)
+        self._preview_timer.timeout.connect(self._capture_preview_frame)
 
         self._shortcuts: list[QShortcut] = []
         self._init_ui()
@@ -69,8 +72,8 @@ class MainWindow(QMainWindow):
     def _init_ui(self) -> None:
         """Initialize UI components."""
         self.setWindowTitle("Blink! - Eye Health Monitor")
-        self.setMinimumSize(600, 550)
-        self.resize(650, 600)
+        self.setMinimumSize(900, 720)
+        self.resize(1024, 760)
         self.setStyleSheet(
             """
             QMainWindow { background: #0f172a; }
@@ -110,6 +113,8 @@ class MainWindow(QMainWindow):
 
         # Status panel
         self._create_status_panel(layout)
+        layout.addSpacing(10)
+        self._create_preview(layout)
 
         layout.addSpacing(15)
 
@@ -147,6 +152,12 @@ class MainWindow(QMainWindow):
         self._settings_button.setMinimumHeight(42)
         self._settings_button.clicked.connect(self._open_settings)
         action_row.addWidget(self._settings_button)
+
+        self._preview_button = QPushButton("Preview Camera")
+        self._preview_button.setStyleSheet("background-color: #38bdf8; color: #0f172a;")
+        self._preview_button.setMinimumHeight(42)
+        self._preview_button.clicked.connect(self._toggle_preview)
+        action_row.addWidget(self._preview_button)
 
         self._test_animation_button = QPushButton("Test Animation")
         self._test_animation_button.setStyleSheet("background-color: #9b59b6; color: white;")
@@ -221,24 +232,39 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(panel)
 
+    def _create_preview(self, layout: QVBoxLayout) -> None:
+        """Create camera preview panel."""
+        box = QWidget(objectName="Card")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(12, 12, 12, 12)
+        title = QLabel("Camera Preview")
+        title.setStyleSheet("font-size: 13px; color: #a5b4fc; font-weight: 600;")
+        v.addWidget(title)
+        self._preview_label = QLabel("Preview not available")
+        self._preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_label.setMinimumHeight(220)
+        self._preview_label.setStyleSheet("color: #e5e7eb; border: 1px dashed #1f2937;")
+        v.addWidget(self._preview_label)
+        layout.addWidget(box)
+
     def _toggle_monitoring(self) -> None:
         """Toggle monitoring state."""
+        if self._preview_timer.isActive():
+            self._preview_timer.stop()
+            self._preview_button.setText("Preview Camera")
+
         self._monitoring = not self._monitoring
 
         if self._monitoring:
             self._start_button.setText("Stop Monitoring")
-            self._start_button.setStyleSheet(
-                "background-color: #e74c3c; color: white; font-weight: bold;"
-            )
+            self._start_button.setStyleSheet("background-color: #ef4444; color: #0f172a; font-weight: bold;")
             self._calibrate_button.setEnabled(True)
             self._stats_timer.start(1000)
             logger.info("Monitoring started from UI")
             self.signal_bus.start_monitoring.emit()
         else:
             self._start_button.setText("Start Monitoring")
-            self._start_button.setStyleSheet(
-                "background-color: #27ae60; color: white; font-weight: bold;"
-            )
+            self._start_button.setStyleSheet("background-color: #22c55e; color: #0f172a; font-weight: bold;")
             self._calibrate_button.setEnabled(False)
             self._calibration_progress.setVisible(False)
             self._calibrating = False
@@ -275,7 +301,7 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(
             self.settings,
             parent=self,
-            available_cameras=self.camera_manager.get_available_cameras(),
+            available_cameras=self.camera_manager.get_camera_info(),
         )
         if dialog.exec():
             self.settings = dialog.get_settings()
@@ -307,31 +333,19 @@ class MainWindow(QMainWindow):
         """Update status displays."""
         # Camera status
         if self._camera_active:
-            self._camera_status_label.setText("Camera: Active")
-            self._camera_status_label.setStyleSheet(
-                "font-size: 13px; padding: 8px; background-color: #d4edda; "
-                "border-radius: 5px; color: #155724; font-weight: bold;"
-            )
+            self._camera_status_label.setText("Camera: Active ✓")
+            self._camera_status_label.setStyleSheet("font-size: 13px; color: #22c55e;")
         else:
             self._camera_status_label.setText("Camera: Inactive")
-            self._camera_status_label.setStyleSheet(
-                "font-size: 13px; padding: 8px; background-color: #ecf0f1; "
-                "border-radius: 5px; color: #7f8c8d; font-weight: bold;"
-            )
+            self._camera_status_label.setStyleSheet("font-size: 13px; color: #f87171;")
 
         # Face status
         if self._face_detected:
             self._face_status_label.setText("Face: Detected")
-            self._face_status_label.setStyleSheet(
-                "font-size: 13px; padding: 8px; background-color: #d4edda; "
-                "border-radius: 5px; color: #155724;"
-            )
+            self._face_status_label.setStyleSheet("font-size: 13px; color: #22c55e;")
         else:
             self._face_status_label.setText("Face: Not detected")
-            self._face_status_label.setStyleSheet(
-                "font-size: 13px; padding: 8px; background-color: #ecf0f1; "
-                "border-radius: 5px; color: #7f8c8d;"
-            )
+            self._face_status_label.setStyleSheet("font-size: 13px; color: #e5e7eb;")
 
         # EAR
         ear_text = f"Current EAR: {self._current_ear:.3f}" if self._current_ear > 0 else "Current EAR: --"
@@ -350,6 +364,27 @@ class MainWindow(QMainWindow):
         if not self._monitoring:
             return
         self._update_status_display()
+
+    def _toggle_preview(self) -> None:
+        """Toggle lightweight preview without full monitoring."""
+        if self._preview_timer.isActive():
+            self._preview_timer.stop()
+            self._preview_button.setText("Preview Camera")
+            return
+
+        if not self.camera_manager.is_open():
+            self.camera_manager.open_camera(
+                camera_id=self.settings.camera_id,
+                resolution=self.settings.get_resolution_tuple(),
+            )
+        self._preview_timer.start(150)  # ~6 fps
+        self._preview_button.setText("Stop Preview")
+
+    def _capture_preview_frame(self) -> None:
+        """Capture single frame for preview."""
+        frame = self.camera_manager.capture_frame()
+        if frame is not None:
+            self.show_preview(frame)
 
     def closeEvent(self, event) -> None:
         """Handle window close event.
@@ -445,3 +480,21 @@ class MainWindow(QMainWindow):
     def is_calibrating(self) -> bool:
         """Get calibration state."""
         return self._calibrating
+
+    def show_preview(self, frame) -> None:
+        """Update camera preview with incoming frame."""
+        try:
+            rgb = frame[:, :, ::-1].copy()  # make contiguous RGB copy
+            h, w, _ = rgb.shape
+            bytes_per_line = 3 * w
+            qimg = QImage(rgb.tobytes(), w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            pix = QPixmap.fromImage(qimg).scaled(
+                480,
+                270,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._preview_label.setPixmap(pix)
+            self._preview_label.setText("")
+        except Exception as exc:
+            logger.debug(f"Preview update failed: {exc}")

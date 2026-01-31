@@ -119,6 +119,7 @@ class BlinkApplication(QApplication):
         self.vision_worker.calibration_progress.connect(self._on_calibration_progress)
         self.vision_worker.calibration_complete.connect(self._on_calibration_complete)
         self.vision_worker.error_occurred.connect(self._on_error)
+        self.vision_worker.frame_preview.connect(self._on_frame_preview)
 
         # Connect signal bus to vision worker
         self.signal_bus.start_monitoring.connect(self.vision_worker.start_monitoring)
@@ -205,6 +206,10 @@ class BlinkApplication(QApplication):
         """
         self.main_window.set_camera_status(active)
         self.signal_bus.camera_status_changed.emit(active)
+
+    def _on_frame_preview(self, frame) -> None:
+        """Send preview frame to UI."""
+        self.main_window.show_preview(frame)
 
     def _on_calibration_progress(self, progress: int) -> None:
         """Handle calibration progress signal.
