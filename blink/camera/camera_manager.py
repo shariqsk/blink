@@ -25,6 +25,8 @@ class CameraManager(QObject):
         self._mutex = QMutex()
         self._backend: Optional[int] = None
         self._consecutive_failures = 0
+        self._last_backend_attempt = 0
+        self._consecutive_dark = 0
 
     def open_camera(
         self,
@@ -111,15 +113,25 @@ class CameraManager(QObject):
 
             if not ret or frame is None:
                 self._consecutive_failures += 1
-                if self._consecutive_failures % 5 == 1:
+                if self._consecutive_failures % 3 == 1:
                     logger.warning("Failed to capture frame")
-                if self._consecutive_failures >= 10:
-                    logger.error("Camera frame capture failed repeatedly; closing device")
-                    self.camera_error.emit("Camera capture failed repeatedly")
-                    self._close_camera_unlocked()
-                    return None
+                if self._consecutive_failures >= 6:
+                    logger.warning("Capture failing repeatedly; attempting reopen with fallback backend")
+                    self._attempt_reopen_locked()
                 return None
             self._consecutive_failures = 0
+
+            # Detect completely dark frames (common when backend opens the wrong device)
+            if frame.size == 0:
+                return None
+            if frame.mean() < 1.0:
+                self._consecutive_dark += 1
+                if self._consecutive_dark >= 6:
+                    logger.warning("Camera returning black frames; attempting reopen on another backend/id")
+                    self._attempt_reopen_locked()
+                return None
+            else:
+                self._consecutive_dark = 0
 
             return frame
 
@@ -137,6 +149,7 @@ class CameraManager(QObject):
             self._close_camera_unlocked()
             self._backend = None
             self._consecutive_failures = 0
+            self._consecutive_dark = 0
         finally:
             self._mutex.unlock()
 
@@ -191,9 +204,44 @@ class CameraManager(QObject):
     def _preferred_backends(self) -> list[int]:
         """Return a backend preference list (Windows first tries DSHOW then MSMF)."""
         if platform.system().lower() == "windows":
-            # Many machines ship with MSMF; try it first to avoid DSHOW index warnings
+            # Try MSMF first; if it fails, fall back to DSHOW then ANY
             return [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]
         return [cv2.CAP_ANY]
+
+    def _attempt_reopen_locked(self) -> None:
+        """Attempt to reopen camera with next backend/id while mutex is held."""
+        current_id = self._camera_id
+        # Close current handle
+        self._close_camera_unlocked()
+        # Try same id with remaining backends
+        for backend in self._preferred_backends():
+            cap = cv2.VideoCapture(current_id, backend)
+            if not cap.isOpened():
+                cap.release()
+                continue
+            self._capture = cap
+            self._backend = backend
+            self._is_open = True
+            self._consecutive_failures = 0
+            self._consecutive_dark = 0
+            logger.info(f"Reopened camera {current_id} with backend {backend}")
+            return
+        # Try other ids 0-3
+        for cid in range(0, 4):
+            for backend in self._preferred_backends():
+                cap = cv2.VideoCapture(cid, backend)
+                if not cap.isOpened():
+                    cap.release()
+                    continue
+                self._capture = cap
+                self._backend = backend
+                self._camera_id = cid
+                self._is_open = True
+                self._consecutive_failures = 0
+                self._consecutive_dark = 0
+                logger.info(f"Reopened camera fallback id {cid} backend {backend}")
+                return
+        logger.error("Reopen failed: no available camera")
 
     def get_camera_info(self) -> List[Tuple[int, str]]:
         """Enumerate camera IDs with friendly names on Windows (DirectShow); fallback to numeric IDs."""

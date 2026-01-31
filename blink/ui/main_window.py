@@ -71,6 +71,12 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._init_hotkeys()
         self._update_status_display()
+        self._clear_preview()
+
+    def _clear_preview(self) -> None:
+        """Blank the preview area."""
+        self._preview_label.clear()
+        self._preview_label.setText("Preview not available")
 
     def _init_ui(self) -> None:
         """Initialize UI components with a high-contrast, non-overlapping layout."""
@@ -350,6 +356,8 @@ class MainWindow(QMainWindow):
             self._stats_timer.stop()
             self._reset_status()
             self._set_status_chip("Idle", "#1e293b", "#e2e8f0")
+            if not self._preview_enabled:
+                self._clear_preview()
             logger.info("Monitoring stopped from UI")
             self.signal_bus.stop_monitoring.emit()
 
@@ -471,9 +479,9 @@ class MainWindow(QMainWindow):
             self._preview_button.setText("Preview camera")
             if self._preview_timer.isActive():
                 self._preview_timer.stop()
-            # If monitoring is not running, release the camera when preview stops.
-            if not self._monitoring and self.camera_manager.is_open():
-                self.camera_manager.close_camera()
+            if not self._monitoring:
+                self.signal_bus.stop_preview.emit()
+            self._clear_preview()
             return
 
         # Enable preview
@@ -481,25 +489,20 @@ class MainWindow(QMainWindow):
         self._preview_button.setText("Stop preview")
 
         if self._monitoring:
-            # When monitoring is running, we reuse worker-emitted preview frames;
-            # nothing else to start here.
+            # When monitoring is running, we reuse worker-emitted preview frames.
             return
 
-        # Preview-only mode: open camera and poll light frames
-        if not self.camera_manager.is_open():
-            self.camera_manager.open_camera(
-                camera_id=self.settings.camera_id,
-                resolution=self.settings.get_resolution_tuple(),
-            )
-        self._preview_timer.start(150)  # ~6 fps
+        # Preview-only mode: ask worker to capture on its thread
+        self.signal_bus.start_preview.emit()
+        self._preview_timer.start(150)  # poll display refresh cadence
 
     def _capture_preview_frame(self) -> None:
         """Capture single frame for preview."""
         if not self._preview_enabled:
             return
-        frame = self.camera_manager.capture_frame()
-        if frame is not None:
-            self.show_preview(frame)
+        # In preview-only mode, we rely on worker emitting preview frames.
+        # This timer simply ensures the label updates if frames arrive.
+        pass
 
     def closeEvent(self, event) -> None:
         """Handle window close event.
@@ -508,6 +511,7 @@ class MainWindow(QMainWindow):
             event: Close event.
         """
         logger.info("Main window closed (will continue running in tray)")
+        self._clear_preview()
         self.hide()
         event.ignore()
 
@@ -599,6 +603,10 @@ class MainWindow(QMainWindow):
     def show_preview(self, frame) -> None:
         """Update camera preview with incoming frame."""
         try:
+            if frame is None:
+                self._preview_label.clear()
+                self._preview_label.setText("No camera frame")
+                return
             rgb = frame[:, :, ::-1].copy()  # make contiguous RGB copy
             h, w, _ = rgb.shape
             bytes_per_line = 3 * w

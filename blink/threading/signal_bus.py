@@ -20,6 +20,8 @@ class SignalBus(QObject):
     # Control signals
     start_monitoring = pyqtSignal()
     stop_monitoring = pyqtSignal()
+    start_preview = pyqtSignal()
+    stop_preview = pyqtSignal()
     settings_changed = pyqtSignal(object)
     pause_for_duration = pyqtSignal(int)
     pause_until_tomorrow = pyqtSignal()

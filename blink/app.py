@@ -134,6 +134,8 @@ class BlinkApplication(QApplication):
         # Connect signal bus to vision worker
         self.signal_bus.start_monitoring.connect(self.vision_worker.start_monitoring, Qt.ConnectionType.QueuedConnection)
         self.signal_bus.stop_monitoring.connect(self.vision_worker.stop_monitoring, Qt.ConnectionType.QueuedConnection)
+        self.signal_bus.start_preview.connect(self.vision_worker.start_preview, Qt.ConnectionType.QueuedConnection)
+        self.signal_bus.stop_preview.connect(self.vision_worker.stop_preview, Qt.ConnectionType.QueuedConnection)
         self.signal_bus.test_animation.connect(self._on_test_animation)
         self.signal_bus.settings_changed.connect(self._on_settings_changed)
 

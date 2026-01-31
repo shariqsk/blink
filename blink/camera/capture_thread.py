@@ -38,12 +38,16 @@ class CaptureThread(QThread):
 
     def start_capture(self) -> None:
         """Start camera capture."""
+        if self._running:
+            return
         self._running = True
         self._camera_enabled = True
         logger.info(f"Capture thread started (target FPS: {self.target_fps})")
 
     def stop_capture(self) -> None:
         """Stop camera capture (keeps thread alive but idle)."""
+        if not self._running:
+            return
         self._running = False
         self._camera_enabled = False
         logger.info("Capture thread stopped")

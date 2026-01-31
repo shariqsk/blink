@@ -79,6 +79,8 @@ class VisionWorker(QObject):
         self._binks_in_last_minute = 0
         self._preview_skip = 0
         self._max_camera_id_probe = 3
+        self._preview_only = False
+        self._pending_restart = False
 
     def initialize(self) -> None:
         """Initialize vision components."""
@@ -112,8 +114,10 @@ class VisionWorker(QObject):
             except Exception as exc:
                 logger.error(f"Warm start failed: {exc}")
 
-    def _open_camera_with_fallback(self) -> bool:
-        """Try requested camera first, then fall back to first available index."""
+    def _ensure_camera_open_locked(self) -> bool:
+        """Try current camera, then fall back; caller must hold mutex."""
+        if self.camera_manager.is_open():
+            return True
         if self.camera_manager.open_camera(
             camera_id=self.camera_id,
             resolution=self.resolution,
@@ -138,10 +142,9 @@ class VisionWorker(QObject):
             if self._running:
                 return
 
-            if not self.camera_manager.is_open():
-                if not self._open_camera_with_fallback():
-                    self.error_occurred.emit("Failed to open camera")
-                    return
+            if not self._ensure_camera_open_locked():
+                self.error_occurred.emit("Failed to open camera")
+                return
 
             # Initialize if not already
             if self._face_detector is None:
@@ -154,6 +157,7 @@ class VisionWorker(QObject):
 
             # Start capture thread
             if self._capture_thread:
+                self._preview_only = False
                 self._capture_thread.start_capture()
                 if not self._capture_thread.isRunning():
                     self._capture_thread.start()
@@ -190,6 +194,50 @@ class VisionWorker(QObject):
         finally:
             self._mutex.unlock()
 
+    def start_preview(self) -> None:
+        """Start preview-only mode (no detection)."""
+        self._mutex.lock()
+        try:
+            if self._preview_only and self._capture_thread and self._capture_thread.is_running:
+                return
+
+            # Ensure capture thread exists (initialize if needed)
+            if self._capture_thread is None:
+                try:
+                    self.initialize()
+                except Exception as exc:
+                    self.error_occurred.emit(f"Preview init failed: {exc}")
+                    logger.error(f"Preview init failed: {exc}")
+                    return
+
+            if not self._ensure_camera_open_locked():
+                self.error_occurred.emit("Failed to open camera for preview")
+                return
+
+            if self._capture_thread:
+                self._preview_only = True
+                self._capture_thread.set_target_fps(max(10, self.target_fps))
+                self._capture_thread.start_capture()
+                if not self._capture_thread.isRunning():
+                    self._capture_thread.start()
+                logger.info("Preview-only capture started")
+        finally:
+            self._mutex.unlock()
+
+    def stop_preview(self) -> None:
+        """Stop preview-only mode."""
+        self._mutex.lock()
+        try:
+            if not self._preview_only:
+                return
+            self._preview_only = False
+            if self._capture_thread:
+                self._capture_thread.stop_capture()
+            self.frame_preview.emit(None)
+            logger.info("Preview-only capture stopped")
+        finally:
+            self._mutex.unlock()
+
     def start_calibration(self) -> None:
         """Start calibration phase."""
         self._mutex.lock()
@@ -212,8 +260,21 @@ class VisionWorker(QObject):
         Args:
             frame: Captured frame (BGR).
         """
+        if frame is None:
+            return
+
+        # Preview-only path: just forward frames, no heavy processing
+        if self._preview_only and not self._running:
+            self.frame_preview.emit(frame)
+            return
+
         if not self._running:
             return
+
+        # Always emit preview periodically so the user sees the camera even before detection
+        self._preview_skip = (self._preview_skip + 1) % 2
+        if self._preview_skip == 0:
+            self.frame_preview.emit(frame)
 
         try:
             # Process frame with face detector
@@ -236,11 +297,6 @@ class VisionWorker(QObject):
                 face_result["left_eye"],
                 face_result["right_eye"],
             )
-
-            # Emit preview every ~2 frames to keep UI snappy while monitoring
-            self._preview_skip = (self._preview_skip + 1) % 2
-            if self._preview_skip == 0:
-                self.frame_preview.emit(frame)
 
             # Calibrate if in calibration mode
             if self._calibrating:
