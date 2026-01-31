@@ -22,7 +22,7 @@ from blink.utils.logger import setup_logging
 from blink.utils.platform import get_app_paths
 from loguru import logger
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
-from PyQt6.QtCore import QThread, Qt
+from PyQt6.QtCore import QThread, Qt, QTimer
 
 
 class BlinkApplication(QApplication):
@@ -112,7 +112,6 @@ class BlinkApplication(QApplication):
 
         self.vision_thread = QThread(self)
         self.vision_thread.setObjectName("VisionThread")
-        self.vision_thread.setPriority(QThread.Priority.NormalPriority)
 
         self.vision_worker = VisionWorker(
             camera_manager=self.camera_manager,
@@ -140,6 +139,8 @@ class BlinkApplication(QApplication):
 
         # Ensure worker cleans up when thread finishes
         self.vision_thread.finished.connect(self.vision_worker.cleanup)
+        # Warm start heavy models once the thread starts (queued to worker thread)
+        self.vision_thread.started.connect(self.vision_worker.warm_start)
         self.vision_thread.start()
 
         logger.info("Vision worker thread started")

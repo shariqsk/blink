@@ -14,7 +14,7 @@ from blink.vision.blink_detector import BlinkDetector, BlinkMetrics
 from blink.vision.eye_analyzer import EyeAnalyzer, EyeMetrics
 from blink.vision.face_detector import FaceDetector
 from loguru import logger
-from PyQt6.QtCore import QObject, QThread, QMutex, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QMutex, QTimer, pyqtSignal
 
 
 class VisionWorker(QObject):
@@ -60,7 +60,8 @@ class VisionWorker(QObject):
 
         # Threads and queues
         self._capture_thread: Optional[CaptureThread] = None
-        self._frame_queue = FrameQueue(max_size=3)
+        # Keep only the freshest frame to reduce latency
+        self._frame_queue = FrameQueue(max_size=1)
 
         # State
         self._running = False
@@ -101,6 +102,14 @@ class VisionWorker(QObject):
         self._capture_thread.camera_error.connect(self.error_occurred)
 
         logger.info("Vision components initialized")
+
+    def warm_start(self) -> None:
+        """Eagerly initialize heavy components without starting monitoring."""
+        if self._face_detector is None:
+            try:
+                self.initialize()
+            except Exception as exc:
+                logger.error(f"Warm start failed: {exc}")
 
     def start_monitoring(self) -> None:
         """Start vision monitoring."""
@@ -157,12 +166,8 @@ class VisionWorker(QObject):
             # Clear frame queue
             self._frame_queue.clear()
 
-            # Close camera to release device
-            self.camera_manager.close_camera()
-
-            # Notify UI/callers that camera is inactive
+            # Keep camera open to allow instant restart; only emit inactive status
             self.camera_status_changed.emit(False)
-
             self.face_detected.emit(False)
             logger.info("Vision monitoring stopped")
 

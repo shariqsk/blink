@@ -1,5 +1,6 @@
 """Camera capture and management."""
 
+import platform
 from collections import deque
 from typing import Optional, Tuple, List
 
@@ -22,6 +23,8 @@ class CameraManager(QObject):
         self._resolution = (640, 480)
         self._is_open = False
         self._mutex = QMutex()
+        self._backend: Optional[int] = None
+        self._consecutive_failures = 0
 
     def open_camera(
         self,
@@ -40,32 +43,49 @@ class CameraManager(QObject):
         self._mutex.lock()
 
         try:
+            # Fast path: already open with same settings
+            if (
+                self._is_open
+                and self._capture is not None
+                and self._capture.isOpened()
+                and self._camera_id == camera_id
+                and self._resolution == resolution
+            ):
+                return True
+
             # Close existing camera
             if self._capture is not None:
-                self.close_camera()
+                self._close_camera_unlocked()
 
-            # Open camera
-            self._capture = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+            # Try backends in order for Windows; elsewhere use CAP_ANY
+            for backend in self._preferred_backends():
+                cap = cv2.VideoCapture(camera_id, backend)
+                if not cap.isOpened():
+                    cap.release()
+                    continue
 
-            if not self._capture.isOpened():
-                self.camera_error.emit(f"Failed to open camera {camera_id}")
-                logger.error(f"Failed to open camera {camera_id}")
-                return False
+                # Set resolution
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
 
-            # Set resolution
-            self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
-            self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+                actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-            # Verify resolution was set
-            actual_width = int(self._capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-            actual_height = int(self._capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            self._resolution = (actual_width, actual_height)
+                self._capture = cap
+                self._backend = backend
+                self._camera_id = camera_id
+                self._resolution = (actual_width, actual_height)
+                self._is_open = True
+                self._consecutive_failures = 0
 
-            self._camera_id = camera_id
-            self._is_open = True
+                logger.info(
+                    f"Camera opened: ID={camera_id}, Resolution={self._resolution}, Backend={backend}"
+                )
+                return True
 
-            logger.info(f"Camera opened: ID={camera_id}, Resolution={self._resolution}")
-            return True
+            self.camera_error.emit(f"Failed to open camera {camera_id}")
+            logger.error(f"Failed to open camera {camera_id} (all backends tried)")
+            return False
 
         except Exception as e:
             self.camera_error.emit(f"Camera error: {str(e)}")
@@ -90,8 +110,16 @@ class CameraManager(QObject):
             ret, frame = self._capture.read()
 
             if not ret or frame is None:
-                logger.warning("Failed to capture frame")
+                self._consecutive_failures += 1
+                if self._consecutive_failures % 5 == 1:
+                    logger.warning("Failed to capture frame")
+                if self._consecutive_failures >= 10:
+                    logger.error("Camera frame capture failed repeatedly; closing device")
+                    self.camera_error.emit("Camera capture failed repeatedly")
+                    self._close_camera_unlocked()
+                    return None
                 return None
+            self._consecutive_failures = 0
 
             return frame
 
@@ -105,19 +133,23 @@ class CameraManager(QObject):
     def close_camera(self) -> None:
         """Close camera device."""
         self._mutex.lock()
+        try:
+            self._close_camera_unlocked()
+            self._backend = None
+            self._consecutive_failures = 0
+        finally:
+            self._mutex.unlock()
 
+    def _close_camera_unlocked(self) -> None:
+        """Internal: close camera without acquiring mutex (caller must hold it)."""
         try:
             if self._capture is not None:
                 self._capture.release()
                 self._capture = None
                 self._is_open = False
                 logger.info("Camera closed")
-
         except Exception as e:
             logger.error(f"Error closing camera: {e}")
-
-        finally:
-            self._mutex.unlock()
 
     def is_open(self) -> bool:
         """Check if camera is open.
@@ -155,6 +187,13 @@ class CameraManager(QObject):
             List of available camera IDs.
         """
         return [cid for cid, _ in self.get_camera_info()]
+
+    def _preferred_backends(self) -> list[int]:
+        """Return a backend preference list (Windows first tries DSHOW then MSMF)."""
+        if platform.system().lower() == "windows":
+            # Many machines ship with MSMF; try it first to avoid DSHOW index warnings
+            return [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]
+        return [cv2.CAP_ANY]
 
     def get_camera_info(self) -> List[Tuple[int, str]]:
         """Enumerate camera IDs with friendly names on Windows (DirectShow); fallback to numeric IDs."""
