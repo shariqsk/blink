@@ -1,5 +1,7 @@
 # Blink! - Eye Health Monitor
 
+program I made while I was bored, used a mix of GLM 4.7 and codex max for programming, used chat gpt 5.2 thinking for the prompts and file strcture. Wanted to see how far I could push GLM 4.7, and suprisingly it did pretty good. it set up the the strcture nicely but left some bugs, which codex came in handy. 
+
 A cross-platform desktop application that monitors your eye blinking patterns and provides gentle visual reminders to maintain healthy eye habits.
 
 ## Features
