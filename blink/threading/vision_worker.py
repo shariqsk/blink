@@ -35,16 +35,22 @@ class VisionWorker(QThread):
         self,
         camera_manager: CameraManager,
         target_fps: int = 15,
+        camera_id: int = 0,
+        resolution: tuple[int, int] = (640, 480),
     ):
         """Initialize vision worker.
 
         Args:
             camera_manager: Camera manager instance.
             target_fps: Target frames per second.
+            camera_id: Preferred camera ID.
+            resolution: Preferred resolution (width, height).
         """
         super().__init__()
         self.camera_manager = camera_manager
         self.target_fps = target_fps
+        self.camera_id = camera_id
+        self.resolution = resolution
 
         # Processing components
         self._face_detector: Optional[FaceDetector] = None
@@ -103,15 +109,20 @@ class VisionWorker(QThread):
             if not self.camera_manager.is_open():
                 # Try to open camera
                 if not self.camera_manager.open_camera(
-                    camera_id=0,
-                    resolution=self.camera_manager.resolution,
+                    camera_id=self.camera_id,
+                    resolution=self.resolution,
                 ):
                     self.error_occurred.emit("Failed to open camera")
                     return
 
             # Initialize if not already
             if self._face_detector is None:
-                self.initialize()
+                try:
+                    self.initialize()
+                except Exception as exc:
+                    self.error_occurred.emit(str(exc))
+                    logger.error(f"Initialization failed: {exc}")
+                    return
 
             # Start capture thread
             if self._capture_thread:
@@ -344,14 +355,19 @@ class VisionWorker(QThread):
             # Need to restart camera with new resolution
             self.stop_monitoring()
             self.camera_manager.open_camera(
-                camera_id=0,
+                camera_id=self.camera_id,
                 resolution=resolution,
             )
             self.start_monitoring()
         else:
             self.camera_manager.open_camera(
-                camera_id=0,
+                camera_id=self.camera_id,
                 resolution=resolution,
             )
 
         logger.info(f"Camera resolution set to {resolution}")
+
+    def set_camera_id(self, camera_id: int) -> None:
+        """Set camera device ID."""
+        self.camera_id = camera_id
+        logger.info(f"Camera ID set to {camera_id}")

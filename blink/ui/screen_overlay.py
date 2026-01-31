@@ -291,11 +291,11 @@ class ScreenOverlay(QWidget):
     def _get_blink_timings(self) -> tuple[int, int, int]:
         """Get blink timing tuple (fade_out, hold, fade_in) in ms."""
         if self._intensity == AnimationIntensity.LOW:
-            return 250, 100, 250
+            return 180, 80, 180
         elif self._intensity == AnimationIntensity.MEDIUM:
-            return 200, 50, 200
+            return 150, 70, 150
         else:
-            return 150, 30, 150
+            return 120, 60, 120
 
     def _get_blink_interval(self) -> int:
         """Get interval between blinks in ms."""
@@ -305,9 +305,12 @@ class ScreenOverlay(QWidget):
 
     def _get_blink_dim_level(self) -> float:
         """Get dim level for blink (0.0-1.0)."""
-        return {AnimationIntensity.LOW: 0.3, AnimationIntensity.MEDIUM: 0.4, AnimationIntensity.HIGH: 0.5}[
-            self._intensity
-        ]
+        # Keep screen visible; gentle dim instead of black flash
+        return {
+            AnimationIntensity.LOW: 0.8,
+            AnimationIntensity.MEDIUM: 0.7,
+            AnimationIntensity.HIGH: 0.6,
+        }[self._intensity]
 
     def _get_irritation_duration(self) -> int:
         """Get total duration of irritation in ms."""

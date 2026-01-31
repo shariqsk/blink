@@ -73,3 +73,23 @@ def validate_alert_mode(mode: str) -> str:
     if mode not in valid:
         raise ValueError(f"Invalid mode. Must be one of: {', '.join(valid)}")
     return mode
+
+
+def validate_quiet_hours(start: str, end: str) -> tuple[str, str]:
+    """Validate quiet hours strings in HH:MM 24h format."""
+    from datetime import datetime
+
+    try:
+        datetime.strptime(start, "%H:%M")
+        datetime.strptime(end, "%H:%M")
+    except ValueError as exc:
+        raise ValueError("Quiet hours must be in HH:MM 24-hour format") from exc
+
+    return start, end
+
+
+def validate_hotkey(hotkey: str) -> str:
+    """Validate a basic hotkey string."""
+    if not hotkey or "+" not in hotkey:
+        raise ValueError("Hotkey must include at least one modifier, e.g., Ctrl+Shift+B")
+    return hotkey

@@ -4,7 +4,7 @@
 PyQt6>=6.7.0
 
 # Computer Vision & ML
-mediapipe>=0.10.32
+mediapipe>=0.10.30
 opencv-python>=4.8.0
 
 # Cross-platform paths

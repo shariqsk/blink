@@ -3,13 +3,16 @@
 from loguru import logger
 
 from blink.config.settings import Settings
+from blink.config.config_manager import ConfigManager
+from blink.threading.signal_bus import SignalBus
 from blink.ui.settings_dialog import SettingsDialog
+from blink.utils.diagnostics import export_diagnostics
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QApplication,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QProgressBar,
     QVBoxLayout,
@@ -20,14 +23,29 @@ from PyQt6.QtWidgets import (
 class MainWindow(QMainWindow):
     """Main application window."""
 
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        signal_bus: SignalBus,
+        config_manager: ConfigManager,
+        app_paths,
+        camera_manager,
+    ):
         """Initialize main window.
 
         Args:
             settings: Application settings.
+            signal_bus: Shared signal bus.
+            config_manager: Config persistence manager.
+            app_paths: Runtime paths for diagnostics export.
+            camera_manager: Camera manager for listing devices.
         """
         super().__init__()
         self.settings = settings
+        self.signal_bus = signal_bus
+        self.config_manager = config_manager
+        self.app_paths = app_paths
+        self.camera_manager = camera_manager
         self._monitoring = False
         self._camera_active = False
         self._face_detected = False
@@ -43,7 +61,9 @@ class MainWindow(QMainWindow):
         self._stats_timer = QTimer(self)
         self._stats_timer.timeout.connect(self._update_statistics_display)
 
+        self._shortcuts: list[QShortcut] = []
         self._init_ui()
+        self._init_hotkeys()
         self._update_status_display()
 
     def _init_ui(self) -> None:
@@ -51,6 +71,20 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Blink! - Eye Health Monitor")
         self.setMinimumSize(600, 550)
         self.resize(650, 600)
+        self.setStyleSheet(
+            """
+            QMainWindow { background: #0f172a; }
+            QLabel { color: #e5e7eb; }
+            QPushButton { font-size: 14px; padding: 12px; border-radius: 8px; color: #0f172a; background: #38bdf8; border: none; font-weight: 600; }
+            QPushButton:hover { background: #0ea5e9; }
+            QPushButton:pressed { background: #0284c7; }
+            QGroupBox { border: 1px solid #1f2937; border-radius: 10px; margin-top: 12px; color: #e5e7eb; }
+            QGroupBox:title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
+            QWidget#Card { background: #111827; border: 1px solid #1f2937; border-radius: 10px; }
+            QProgressBar { background: #111827; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 6px; text-align: center; }
+            QProgressBar::chunk { background: #38bdf8; border-radius: 6px; }
+            """
+        )
 
         # Central widget
         central = QWidget()
@@ -83,18 +117,12 @@ class MainWindow(QMainWindow):
         button_layout = QVBoxLayout()
 
         self._start_button = QPushButton("Start Monitoring")
-        self._start_button.setStyleSheet(
-            "font-size: 14px; padding: 12px; background-color: #27ae60; "
-            "color: white; border-radius: 5px; font-weight: bold;"
-        )
+        self._start_button.setStyleSheet("background-color: #22c55e; color: #0f172a; font-weight: bold;")
         self._start_button.clicked.connect(self._toggle_monitoring)
         button_layout.addWidget(self._start_button)
 
         self._calibrate_button = QPushButton("Calibrate Threshold")
-        self._calibrate_button.setStyleSheet(
-            "font-size: 14px; padding: 12px; background-color: #f39c12; "
-            "color: white; border-radius: 5px;"
-        )
+        self._calibrate_button.setStyleSheet("background-color: #f59e0b; color: #0f172a;")
         self._calibrate_button.clicked.connect(self._start_calibration)
         self._calibrate_button.setEnabled(False)
         button_layout.addWidget(self._calibrate_button)
@@ -112,16 +140,47 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(10)
 
+        action_row = QVBoxLayout()
+
         self._settings_button = QPushButton("Settings")
-        self._settings_button.setStyleSheet(
-            "font-size: 14px; padding: 12px; background-color: #3498db; "
-            "color: white; border-radius: 5px;"
-        )
+        self._settings_button.setStyleSheet("background-color: #3498db; color: white;")
+        self._settings_button.setMinimumHeight(42)
         self._settings_button.clicked.connect(self._open_settings)
-        button_layout.addWidget(self._settings_button)
+        action_row.addWidget(self._settings_button)
+
+        self._test_animation_button = QPushButton("Test Animation")
+        self._test_animation_button.setStyleSheet("background-color: #9b59b6; color: white;")
+        self._test_animation_button.setMinimumHeight(42)
+        self._test_animation_button.clicked.connect(self._trigger_test_animation)
+        action_row.addWidget(self._test_animation_button)
+
+        self._export_button = QPushButton("Export Diagnostics")
+        self._export_button.setStyleSheet("background-color: #34495e; color: white;")
+        self._export_button.setMinimumHeight(42)
+        self._export_button.clicked.connect(self._export_diagnostics)
+        action_row.addWidget(self._export_button)
+
+        button_layout.addLayout(action_row)
 
         layout.addLayout(button_layout)
         layout.addStretch()
+
+    def _init_hotkeys(self) -> None:
+        """Register global-ish shortcuts within the window."""
+        for sc in self._shortcuts:
+            sc.setParent(None)
+        self._shortcuts = []
+
+        shortcut_start = QShortcut(QKeySequence(self.settings.hotkey_start_stop), self)
+        shortcut_start.activated.connect(self._toggle_monitoring)
+
+        shortcut_pause = QShortcut(QKeySequence(self.settings.hotkey_pause), self)
+        shortcut_pause.activated.connect(lambda: self.signal_bus.pause_for_duration.emit(30))
+
+        shortcut_test = QShortcut(QKeySequence(self.settings.hotkey_test), self)
+        shortcut_test.activated.connect(self._trigger_test_animation)
+
+        self._shortcuts.extend([shortcut_start, shortcut_pause, shortcut_test])
 
     def _create_status_panel(self, layout: QVBoxLayout) -> None:
         """Create status information panel.
@@ -129,43 +188,38 @@ class MainWindow(QMainWindow):
         Args:
             layout: Layout to add panel to.
         """
+        panel = QWidget(objectName="Card")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setSpacing(8)
+        panel_layout.setContentsMargins(12, 12, 12, 12)
+
         # Camera status
         self._camera_status_label = QLabel("Camera: Inactive")
-        self._camera_status_label.setStyleSheet(
-            "font-size: 13px; padding: 8px; background-color: #ecf0f1; "
-            "border-radius: 5px; color: #7f8c8d; font-weight: bold;"
-        )
-        self._camera_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._camera_status_label)
+        self._camera_status_label.setStyleSheet("font-size: 13px; color: #a5b4fc;")
+        self._camera_status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        panel_layout.addWidget(self._camera_status_label)
 
         # Face status
         self._face_status_label = QLabel("Face: Not detected")
-        self._face_status_label.setStyleSheet(
-            "font-size: 13px; padding: 8px; background-color: #ecf0f1; "
-            "border-radius: 5px; color: #7f8c8d;"
-        )
-        self._face_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._face_status_label)
+        self._face_status_label.setStyleSheet("font-size: 13px; color: #cbd5e1;")
+        self._face_status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        panel_layout.addWidget(self._face_status_label)
 
         # Current EAR
         self._ear_label = QLabel("Current EAR: --")
-        self._ear_label.setStyleSheet(
-            "font-size: 13px; padding: 8px; background-color: #ecf0f1; "
-            "border-radius: 5px; color: #34495e;"
-        )
-        self._ear_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._ear_label)
+        self._ear_label.setStyleSheet("font-size: 13px; color: #e5e7eb;")
+        self._ear_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        panel_layout.addWidget(self._ear_label)
 
         # Blink statistics
         self._stats_label = QLabel(
             "Blinks/Min: -- | Last Min: -- | Since Last Blink: --s"
         )
-        self._stats_label.setStyleSheet(
-            "font-size: 13px; padding: 8px; background-color: #ecf0f1; "
-            "border-radius: 5px; color: #34495e;"
-        )
-        self._stats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._stats_label)
+        self._stats_label.setStyleSheet("font-size: 13px; color: #e5e7eb;")
+        self._stats_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        panel_layout.addWidget(self._stats_label)
+
+        layout.addWidget(panel)
 
     def _toggle_monitoring(self) -> None:
         """Toggle monitoring state."""
@@ -174,17 +228,16 @@ class MainWindow(QMainWindow):
         if self._monitoring:
             self._start_button.setText("Stop Monitoring")
             self._start_button.setStyleSheet(
-                "font-size: 14px; padding: 12px; background-color: #e74c3c; "
-                "color: white; border-radius: 5px; font-weight: bold;"
+                "background-color: #e74c3c; color: white; font-weight: bold;"
             )
             self._calibrate_button.setEnabled(True)
             self._stats_timer.start(1000)
             logger.info("Monitoring started from UI")
+            self.signal_bus.start_monitoring.emit()
         else:
             self._start_button.setText("Start Monitoring")
             self._start_button.setStyleSheet(
-                "font-size: 14px; padding: 12px; background-color: #27ae60; "
-                "color: white; border-radius: 5px; font-weight: bold;"
+                "background-color: #27ae60; color: white; font-weight: bold;"
             )
             self._calibrate_button.setEnabled(False)
             self._calibration_progress.setVisible(False)
@@ -192,6 +245,7 @@ class MainWindow(QMainWindow):
             self._stats_timer.stop()
             self._reset_status()
             logger.info("Monitoring stopped from UI")
+            self.signal_bus.stop_monitoring.emit()
 
     def _start_calibration(self) -> None:
         """Start calibration process."""
@@ -218,10 +272,26 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         """Open settings dialog."""
-        dialog = SettingsDialog(self.settings, parent=self)
+        dialog = SettingsDialog(
+            self.settings,
+            parent=self,
+            available_cameras=self.camera_manager.get_available_cameras(),
+        )
         if dialog.exec():
             self.settings = dialog.get_settings()
+            self.config_manager.save(self.settings)
+            self.signal_bus.settings_changed.emit(self.settings)
+            self._init_hotkeys()  # refresh shortcuts
             logger.info("Settings updated from dialog")
+
+    def _trigger_test_animation(self) -> None:
+        """Request a test animation."""
+        self.signal_bus.test_animation.emit()
+
+    def _export_diagnostics(self) -> None:
+        """Export logs + config bundle."""
+        archive_path = export_diagnostics(self.app_paths)
+        QMessageBox.information(self, "Diagnostics exported", f"Saved to:\n{archive_path}")
 
     def _reset_status(self) -> None:
         """Reset status displays."""
@@ -298,6 +368,7 @@ class MainWindow(QMainWindow):
             settings: New settings.
         """
         self.settings = settings
+        self._init_hotkeys()
 
     @pyqtSlot(bool)
     def set_camera_status(self, active: bool) -> None:

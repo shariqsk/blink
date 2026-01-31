@@ -6,20 +6,24 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QMenu, QSystemTrayIcon, QWidget
 
+from blink.threading.signal_bus import SignalBus
+
 
 class TrayIcon(QSystemTrayIcon):
     """System tray icon with menu."""
 
-    def __init__(self, parent: QWidget, overlay=None):
+    def __init__(self, parent: QWidget, signal_bus: SignalBus, overlay=None):
         """Initialize tray icon.
 
         Args:
             parent: Parent widget (main window).
+            signal_bus: Shared signal bus for actions.
             overlay: ScreenOverlay instance for animation control.
         """
         super().__init__(parent)
         self.parent_window = parent
         self.overlay = overlay
+        self.signal_bus = signal_bus
 
         self._init_icon()
         self._init_menu()
@@ -45,6 +49,13 @@ class TrayIcon(QSystemTrayIcon):
         """Initialize context menu."""
         menu = QMenu()
 
+        # Status text
+        self._status_action = QAction("Status: Idle", self)
+        self._status_action.setEnabled(False)
+        menu.addAction(self._status_action)
+
+        menu.addSeparator()
+
         # Show/Hide window
         self._show_action = QAction("Show Window", self)
         self._show_action.triggered.connect(self._show_window)
@@ -67,12 +78,40 @@ class TrayIcon(QSystemTrayIcon):
 
         menu.addSeparator()
 
+        # Pause durations
+        self._pause_15_action = QAction("Pause 15 min", self)
+        self._pause_15_action.triggered.connect(lambda: self.signal_bus.pause_for_duration.emit(15))
+        menu.addAction(self._pause_15_action)
+
+        self._pause_30_action = QAction("Pause 30 min", self)
+        self._pause_30_action.triggered.connect(lambda: self.signal_bus.pause_for_duration.emit(30))
+        menu.addAction(self._pause_30_action)
+
+        self._pause_60_action = QAction("Pause 60 min", self)
+        self._pause_60_action.triggered.connect(lambda: self.signal_bus.pause_for_duration.emit(60))
+        menu.addAction(self._pause_60_action)
+
+        self._pause_tomorrow_action = QAction("Pause until tomorrow", self)
+        self._pause_tomorrow_action.triggered.connect(lambda: self.signal_bus.pause_until_tomorrow.emit())
+        menu.addAction(self._pause_tomorrow_action)
+
+        self._resume_action = QAction("Resume now", self)
+        self._resume_action.triggered.connect(lambda: self.signal_bus.resume_requested.emit())
+        menu.addAction(self._resume_action)
+
+        menu.addSeparator()
+
         # Animation control
         if self.overlay:
             self._stop_animation_action = QAction("Stop Animation", self)
             self._stop_animation_action.triggered.connect(self._stop_animation)
             menu.addAction(self._stop_animation_action)
-            menu.addSeparator()
+
+        self._test_animation_action = QAction("Test animation", self)
+        self._test_animation_action.triggered.connect(lambda: self.signal_bus.test_animation.emit())
+        menu.addAction(self._test_animation_action)
+
+        menu.addSeparator()
 
         # Quit
         quit_action = QAction("Quit", self)
@@ -95,12 +134,14 @@ class TrayIcon(QSystemTrayIcon):
 
     def _start_monitoring(self) -> None:
         """Start monitoring via tray."""
+        self.signal_bus.start_monitoring.emit()
         if hasattr(self.parent_window, "set_monitoring_state"):
             self.parent_window.set_monitoring_state(True)
         logger.info("Monitoring started from tray")
 
     def _stop_monitoring(self) -> None:
         """Stop monitoring via tray."""
+        self.signal_bus.stop_monitoring.emit()
         if hasattr(self.parent_window, "set_monitoring_state"):
             self.parent_window.set_monitoring_state(False)
         logger.info("Monitoring stopped from tray")
@@ -117,6 +158,10 @@ class TrayIcon(QSystemTrayIcon):
 
         logger.info("Quit requested from tray")
         QApplication.instance().quit()
+
+    def set_status_text(self, text: str) -> None:
+        """Update status line in menu."""
+        self._status_action.setText(f"Status: {text}")
 
     def activated(self, reason) -> None:
         """Handle tray icon activation.

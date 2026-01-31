@@ -1,15 +1,16 @@
 """Main application orchestrator for Blink!."""
 
 import sys
-from pathlib import Path
 
 from blink.camera.camera_manager import CameraManager
 from blink.config.config_manager import ConfigManager
-from blink.config.settings import AnimationIntensity, Settings
+from blink.config.settings import Settings
+from blink.core.aggregated_store import AggregatedStatsStore
+from blink.core.time_trigger import TimeTriggerEngine
 from blink.threading.signal_bus import SignalBus
 from blink.threading.vision_worker import VisionWorker
 from blink.ui.main_window import MainWindow
-from blink.ui.screen_overlay import ScreenOverlay
+from blink.ui.screen_overlay import AnimationIntensity, ScreenOverlay
 from blink.ui.tray_icon import TrayIcon
 from blink.utils.logger import setup_logging
 from blink.utils.platform import get_app_paths
@@ -33,6 +34,9 @@ class BlinkApplication(QApplication):
         self._init_paths()
         self._init_config()
         self._init_signal_bus()
+        self._init_stats_store()
+        self._init_trigger_engine()
+        self._wire_status_signals()
         self._init_camera()
         self._init_vision_worker()
         self._init_ui()
@@ -61,6 +65,34 @@ class BlinkApplication(QApplication):
         self.signal_bus = SignalBus()
         logger.info("Signal bus initialized")
 
+    def _init_stats_store(self) -> None:
+        """Initialize aggregated stats store."""
+        self.stats_store = AggregatedStatsStore(
+            self.paths.data_dir,
+            enabled=self.settings.collect_aggregated_stats,
+        )
+        logger.info("Aggregated stats store ready")
+
+    def _init_trigger_engine(self) -> None:
+        """Initialize time-based trigger engine."""
+        self.trigger_engine = TimeTriggerEngine(
+            self.settings,
+            self.signal_bus,
+            stats_store=self.stats_store,
+        )
+
+    def _wire_status_signals(self) -> None:
+        """Wire status-related signals for tray/status updates."""
+        self.signal_bus.start_monitoring.connect(lambda: self._set_tray_status("Monitoring"))
+        self.signal_bus.stop_monitoring.connect(lambda: self._set_tray_status("Idle"))
+        self.signal_bus.pause_for_duration.connect(
+            lambda minutes: self._set_tray_status(f"Paused {minutes}m")
+        )
+        self.signal_bus.pause_until_tomorrow.connect(
+            lambda: self._set_tray_status("Paused until tomorrow")
+        )
+        self.signal_bus.resume_requested.connect(lambda: self._set_tray_status("Monitoring"))
+
     def _init_camera(self) -> None:
         """Initialize camera manager."""
         self.camera_manager = CameraManager()
@@ -71,9 +103,12 @@ class BlinkApplication(QApplication):
         resolution = self.settings.get_resolution_tuple()
         target_fps = self.settings.target_fps
 
+        resolution = self.settings.get_resolution_tuple()
         self.vision_worker = VisionWorker(
             camera_manager=self.camera_manager,
             target_fps=target_fps,
+            camera_id=self.settings.camera_id,
+            resolution=resolution,
         )
 
         # Connect vision worker signals
@@ -88,6 +123,8 @@ class BlinkApplication(QApplication):
         # Connect signal bus to vision worker
         self.signal_bus.start_monitoring.connect(self.vision_worker.start_monitoring)
         self.signal_bus.stop_monitoring.connect(self.vision_worker.stop_monitoring)
+        self.signal_bus.test_animation.connect(self._on_test_animation)
+        self.signal_bus.settings_changed.connect(self._on_settings_changed)
 
         logger.info("Vision worker initialized")
 
@@ -97,7 +134,13 @@ class BlinkApplication(QApplication):
 
         try:
             # Main window
-            self.main_window = MainWindow(self.settings)
+            self.main_window = MainWindow(
+                self.settings,
+                self.signal_bus,
+                self.config_manager,
+                self.paths,
+                self.camera_manager,
+            )
             logger.info("Main window created")
 
             # Show or hide based on settings
@@ -117,7 +160,8 @@ class BlinkApplication(QApplication):
 
             # System tray icon
             if self.settings.show_tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
-                self.tray_icon = TrayIcon(self.main_window, self.screen_overlay)
+                self.tray_icon = TrayIcon(self.main_window, self.signal_bus, self.screen_overlay)
+                self._set_tray_status("Idle")
                 logger.info("Tray icon initialized")
             elif self.settings.show_tray_icon:
                 logger.warning("System tray not available; tray icon disabled")
@@ -193,6 +237,12 @@ class BlinkApplication(QApplication):
         """
         logger.error(f"Vision worker error: {error_message}")
         self.signal_bus.error_occurred.emit(error_message)
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.critical(self.main_window, "Blink error", error_message)
+        except Exception:
+            pass
 
     def _on_animation_requested(self, mode: str) -> None:
         """Handle animation request signal.
@@ -211,6 +261,31 @@ class BlinkApplication(QApplication):
             self.screen_overlay.play_irritation()
         else:
             logger.warning(f"Unknown animation mode: {mode}")
+
+    def _on_test_animation(self) -> None:
+        """Trigger a test animation using current mode."""
+        if hasattr(self, "screen_overlay"):
+            self._on_animation_requested(self.settings.alert_mode)
+
+    def _on_settings_changed(self, new_settings: Settings) -> None:
+        """Handle settings updates from UI."""
+        self.settings = new_settings
+        self.trigger_engine.update_settings(new_settings)
+
+        if hasattr(self, "screen_overlay"):
+            intensity = AnimationIntensity(new_settings.animation_intensity)
+            self.screen_overlay.set_intensity(intensity)
+
+        # Update vision worker parameters
+        if hasattr(self, "vision_worker"):
+            self.vision_worker.set_target_fps(new_settings.target_fps)
+            self.vision_worker.set_camera_resolution(new_settings.get_resolution_tuple())
+            self.vision_worker.set_camera_id(new_settings.camera_id)
+
+    def _set_tray_status(self, text: str) -> None:
+        """Update tray status text if tray is present."""
+        if hasattr(self, "tray_icon") and self.tray_icon:
+            self.tray_icon.set_status_text(text)
 
     def run(self) -> int:
         """Run application event loop.

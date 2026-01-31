@@ -1,152 +1,127 @@
-"""Face detection using MediaPipe Face Mesh."""
+"""Face detection using MediaPipe Tasks FaceLandmarker (>=0.10)."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+from importlib import resources
 from typing import Optional, Any
 
 import cv2
 import mediapipe as mp
-from loguru import logger
 import numpy as np
+from loguru import logger
+
+from mediapipe.tasks import python as mp_tasks
+from mediapipe.tasks.python import vision as mp_vision
+from mediapipe.tasks.python.components.containers import landmark as mp_landmark
+
+
+@dataclass
+class FaceResult:
+    """Normalized landmark containers for a single face."""
+
+    landmarks: list[mp_landmark.NormalizedLandmark]
+    left_eye: list[tuple[float, float]]
+    right_eye: list[tuple[float, float]]
+    frame_shape: tuple[int, int, int]
 
 
 class FaceDetector:
-    """Detects faces using MediaPipe Face Mesh."""
+    """Detects faces and eye landmarks via MediaPipe Tasks FaceLandmarker."""
 
-    # MediaPipe Face Mesh indices for eyes
     LEFT_EYE_INDICES = [33, 160, 158, 133, 153, 144]
     RIGHT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
 
     def __init__(self, max_faces: int = 1, refine_landmarks: bool = True):
-        """Initialize face detector.
-
-        Args:
-            max_faces: Maximum number of faces to detect.
-            refine_landmarks: Whether to refine landmarks for eye precision.
-        """
         self.max_faces = max_faces
         self.refine_landmarks = refine_landmarks
-        self._mp_face_mesh: Optional[Any] = None
+        self._landmarker: Optional[mp_vision.FaceLandmarker] = None
 
     def initialize(self) -> None:
-        """Initialize MediaPipe Face Mesh."""
-        if self._mp_face_mesh is not None:
+        """Initialize FaceLandmarker using the packaged task asset."""
+        if self._landmarker:
             return
 
         try:
-            # Try new MediaPipe API first
-            self._mp_face_mesh = mp.FaceMesh(
-                max_num_faces=self.max_faces,
-                refine_landmarks=self.refine_landmarks,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
+            model_asset_path = self._get_packaged_model_path()
+            base_opts = mp_tasks.BaseOptions(model_asset_path=model_asset_path)
+            opts = mp_vision.FaceLandmarkerOptions(
+                base_options=base_opts,
+                num_faces=self.max_faces,
+                output_face_blendshapes=False,
+                output_facial_transformation_matrixes=False,
             )
-        except AttributeError:
-            # Fallback to older API
-            self._mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
-                max_num_faces=self.max_faces,
-                refine_landmarks=self.refine_landmarks,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
-            )
-        logger.info("MediaPipe Face Mesh initialized")
+            self._landmarker = mp_vision.FaceLandmarker.create_from_options(opts)
+            logger.info("MediaPipe Tasks FaceLandmarker initialized")
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(
+                f"Failed to initialize MediaPipe FaceLandmarker: {exc}. "
+                "Ensure mediapipe>=0.10.30 is installed."
+            ) from exc
+
+    def _get_packaged_model_path(self) -> str:
+        """Locate the face_landmarker.task asset inside the mediapipe package."""
+        try:
+            with resources.path("mediapipe.modules.face_landmarker", "face_landmarker.task") as p:
+                return str(p)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "Could not find bundled face_landmarker.task inside the mediapipe package."
+            ) from exc
 
     def process_frame(self, frame: np.ndarray) -> Optional[dict]:
-        """Process a frame and detect face landmarks.
-
-        Args:
-            frame: Input frame (BGR format from OpenCV).
-
-        Returns:
-            Dict with face landmarks and eye coordinates, or None if no face.
-        """
-        if self._mp_face_mesh is None:
+        """Process a frame and return landmarks for the largest face."""
+        if not self._landmarker:
             raise RuntimeError("FaceDetector not initialized. Call initialize() first.")
 
-        # Convert BGR to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        result = self._landmarker.detect(mp_image)
 
-        # Process frame
-        results = self._mp_face_mesh.process(frame_rgb)
-
-        if not results.multi_face_landmarks:
+        if not result.face_landmarks:
             return None
 
-        # Get the largest face (by bounding box area)
-        face_landmarks = self._select_largest_face(
-            frame, results.multi_face_landmarks
-        )
-
-        if face_landmarks is None:
+        # Select largest face
+        face = self._select_largest_face(frame, result.face_landmarks)
+        if face is None:
             return None
 
-        # Extract eye landmarks
-        left_eye = self._extract_eye_landmarks(
-            face_landmarks.landmark, self.LEFT_EYE_INDICES
-        )
-        right_eye = self._extract_eye_landmarks(
-            face_landmarks.landmark, self.RIGHT_EYE_INDICES
-        )
+        left_eye = self._extract_eye(face, self.LEFT_EYE_INDICES)
+        right_eye = self._extract_eye(face, self.RIGHT_EYE_INDICES)
 
-        return {
-            "landmarks": face_landmarks.landmark,
-            "left_eye": left_eye,
-            "right_eye": right_eye,
-            "frame_shape": frame.shape,
-        }
+        return FaceResult(
+            landmarks=face,
+            left_eye=left_eye,
+            right_eye=right_eye,
+            frame_shape=frame.shape,
+        ).__dict__
 
     def _select_largest_face(
         self,
         frame: np.ndarray,
-        face_landmarks_list: list,
-    ) -> Optional[Any]:
-        """Select the largest face by bounding box area.
+        faces: list[list[mp_landmark.NormalizedLandmark]],
+    ) -> Optional[list[mp_landmark.NormalizedLandmark]]:
+        """Pick the face with the largest bounding box area."""
+        if len(faces) == 1:
+            return faces[0]
 
-        Args:
-            frame: Input frame for sizing.
-            face_landmarks_list: List of detected face landmarks.
+        h, w = frame.shape[:2]
+        areas: list[tuple[float, int]] = []
+        for idx, lm_list in enumerate(faces):
+            xs = [lm.x * w for lm in lm_list]
+            ys = [lm.y * h for lm in lm_list]
+            area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+            areas.append((area, idx))
+        areas.sort(reverse=True, key=lambda t: t[0])
+        return faces[areas[0][1]] if areas else None
 
-        Returns:
-            Largest face landmarks.
-        """
-        if not face_landmarks_list:
-            return None
-
-        if len(face_landmarks_list) == 1:
-            return face_landmarks_list[0]
-
-        height, width = frame.shape[:2]
-
-        # Calculate bounding box for each face
-        face_areas = []
-        for i, face in enumerate(face_landmarks_list):
-            # Get bounding box from landmarks
-            x_coords = [lm.x * width for lm in face.landmark]
-            y_coords = [lm.y * height for lm in face.landmark]
-            area = (max(x_coords) - min(x_coords)) * (max(y_coords) - min(y_coords))
-            face_areas.append((area, i))
-
-        # Return face with largest area
-        face_areas.sort(reverse=True, key=lambda x: x[0])
-        return face_landmarks_list[face_areas[0][1]]
-
-    def _extract_eye_landmarks(
-        self,
-        landmarks: list,
-        eye_indices: list,
+    def _extract_eye(
+        self, landmarks: list[mp_landmark.NormalizedLandmark], indices: list[int]
     ) -> list[tuple[float, float]]:
-        """Extract normalized eye landmark coordinates.
-
-        Args:
-            landmarks: Face landmarks from MediaPipe.
-            eye_indices: Indices of eye landmarks.
-
-        Returns:
-            List of (x, y) normalized coordinates.
-        """
-        return [(landmarks[i].x, landmarks[i].y) for i in eye_indices]
+        return [(landmarks[i].x, landmarks[i].y) for i in indices]
 
     def cleanup(self) -> None:
-        """Clean up MediaPipe resources."""
-        if self._mp_face_mesh is not None:
-            self._mp_face_mesh.close()
-            self._mp_face_mesh = None
-            logger.info("MediaPipe Face Mesh cleaned up")
+        if self._landmarker:
+            self._landmarker.close()
+            self._landmarker = None
+            logger.info("FaceLandmarker cleaned up")
