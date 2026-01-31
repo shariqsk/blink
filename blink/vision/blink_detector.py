@@ -37,6 +37,7 @@ class BlinkDetector:
         blink_consecutive_frames: int = 2,
         min_blink_duration_ms: int = 50,
         max_blink_duration_ms: int = 500,
+        min_interblink_ms: int = 250,
     ):
         """Initialize blink detector.
 
@@ -44,10 +45,12 @@ class BlinkDetector:
             blink_consecutive_frames: Consecutive closed frames to count as blink.
             min_blink_duration_ms: Minimum duration to qualify as blink.
             max_blink_duration_ms: Maximum duration to count as blink (longer = eyes closed).
+            min_interblink_ms: Refractory period to avoid double-counting a single blink.
         """
         self.blink_consecutive_frames = blink_consecutive_frames
         self.min_blink_duration_ms = min_blink_duration_ms
         self.max_blink_duration_ms = max_blink_duration_ms
+        self.min_interblink_ms = min_interblink_ms
 
         # State tracking
         self._both_closed_counter = 0
@@ -121,8 +124,8 @@ class BlinkDetector:
         Returns:
             True if a blink is detected.
         """
+        # Record closed streak
         if both_closed:
-            # Start or continue closure tracking
             if self._both_closed_start_time is None:
                 self._both_closed_start_time = timestamp
                 self._both_closed_counter = 1
@@ -130,27 +133,21 @@ class BlinkDetector:
                 self._both_closed_counter += 1
             return False
 
-        # Eyes are open - check if we just completed a blink
-        if self._both_closed_counter >= self.blink_consecutive_frames:
-            # Calculate duration
-            if self._both_closed_start_time:
-                duration = int((timestamp - self._both_closed_start_time).total_seconds() * 1000)
-
-                # Check if within blink duration bounds
-                if (
-                    self.min_blink_duration_ms
-                    <= duration
-                    <= self.max_blink_duration_ms
-                ):
+        # Eyes reopened: evaluate prior closed streak
+        blink = False
+        if self._both_closed_counter >= self.blink_consecutive_frames and self._both_closed_start_time:
+            duration = int((timestamp - self._both_closed_start_time).total_seconds() * 1000)
+            if self.min_blink_duration_ms <= duration <= self.max_blink_duration_ms:
+                # Refractory guard to prevent double counts
+                if self._last_blink_time is None or (timestamp - self._last_blink_time).total_seconds() * 1000 >= self.min_interblink_ms:
+                    blink = True
                     self._total_blinks += 1
                     logger.debug(f"Blink detected (duration: {duration}ms)")
-                    return True
 
-        # Reset counters
+        # Reset streak after evaluation
         self._both_closed_counter = 0
         self._both_closed_start_time = None
-
-        return False
+        return blink
 
     def _calculate_blink_rate(self) -> float:
         """Calculate current blink rate (blinks per minute).

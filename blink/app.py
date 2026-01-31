@@ -103,6 +103,19 @@ class BlinkApplication(QApplication):
     def _init_camera(self) -> None:
         """Initialize camera manager."""
         self.camera_manager = CameraManager()
+        self.available_cameras = self.camera_manager.get_camera_info()
+        if self.available_cameras:
+            logger.info(f"Discovered cameras at startup: {self.available_cameras}")
+            first_cam_id = self.available_cameras[0][0]
+            if self.settings.camera_id not in [cid for cid, _ in self.available_cameras]:
+                logger.info(
+                    f"Configured camera_id {self.settings.camera_id} not present; "
+                    f"switching to available camera {first_cam_id}"
+                )
+                self.settings.camera_id = first_cam_id
+                self.config_manager.save(self.settings)
+        else:
+            logger.warning("No cameras discovered at startup")
         logger.info("Camera manager initialized")
 
     def _init_vision_worker_thread(self) -> None:
@@ -159,6 +172,7 @@ class BlinkApplication(QApplication):
                 self.config_manager,
                 self.paths,
                 self.camera_manager,
+                available_cameras=getattr(self, "available_cameras", None),
             )
             logger.info("Main window created")
 

@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         config_manager: ConfigManager,
         app_paths,
         camera_manager,
+        available_cameras: list[tuple[int, str]] | None = None,
     ):
         """Initialize main window.
 
@@ -41,6 +42,7 @@ class MainWindow(QMainWindow):
             config_manager: Config persistence manager.
             app_paths: Runtime paths for diagnostics export.
             camera_manager: Camera manager for listing devices.
+            available_cameras: Optional pre-enumerated camera list from app start.
         """
         super().__init__()
         self.settings = settings
@@ -48,6 +50,7 @@ class MainWindow(QMainWindow):
         self.config_manager = config_manager
         self.app_paths = app_paths
         self.camera_manager = camera_manager
+        self._available_cameras = available_cameras or self.camera_manager.get_camera_info()
         self._monitoring = False
         self._camera_active = False
         self._face_detected = False
@@ -400,7 +403,7 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(
             self.settings,
             parent=self,
-            available_cameras=self.camera_manager.get_camera_info(),
+            available_cameras=self._refresh_available_cameras(),
         )
         if dialog.exec():
             self.settings = dialog.get_settings()
@@ -523,6 +526,14 @@ class MainWindow(QMainWindow):
         """
         self.settings = settings
         self._init_hotkeys()
+        logger.info("Settings updated and hotkeys refreshed")
+
+    def _refresh_available_cameras(self) -> list[tuple[int, str]]:
+        """Refresh cached camera list so Settings dialog shows current devices."""
+        latest = self.camera_manager.get_camera_info()
+        if latest:
+            self._available_cameras = latest
+        return self._available_cameras
 
     @pyqtSlot(bool)
     def set_camera_status(self, active: bool) -> None:
