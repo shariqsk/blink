@@ -4,8 +4,16 @@ from enum import Enum
 from typing import Literal
 
 from loguru import logger
-from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, QTimer, pyqtProperty
-from PyQt6.QtGui import QColor, QPainter, QScreen
+from PyQt6.QtCore import QPointF, QEasingCurve, QPropertyAnimation, QRect, Qt, QTimer, pyqtProperty
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QLinearGradient,
+    QPainter,
+    QPen,
+    QRadialGradient,
+    QScreen,
+)
 from PyQt6.QtWidgets import QApplication, QWidget
 
 
@@ -29,6 +37,8 @@ class ScreenOverlay(QWidget):
 
     _opacity = 1.0
     _red_tint = 0.0
+    _blink_level = 0.0
+    _pulse_level = 0.0
     _shake_offset_x = 0
     _shake_offset_y = 0
 
@@ -37,6 +47,7 @@ class ScreenOverlay(QWidget):
 
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -71,6 +82,17 @@ class ScreenOverlay(QWidget):
         self._tint_anim = QPropertyAnimation(self, b"redTint")
         self._tint_anim.setDuration(500)
         self._tint_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        self._blink_anim = QPropertyAnimation(self, b"blinkLevel")
+        self._blink_anim.setDuration(200)
+        self._blink_anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        self._pulse_anim = QPropertyAnimation(self, b"pulseLevel")
+        self._pulse_anim.setDuration(1200)
+        self._pulse_anim.setStartValue(0.0)
+        self._pulse_anim.setEndValue(1.0)
+        self._pulse_anim.setLoopCount(-1)
+        self._pulse_anim.setEasingCurve(QEasingCurve.Type.InOutSine)
 
         # Shake animation disabled for stability in sandboxed environments
         self._shake_anim = None
@@ -115,19 +137,155 @@ class ScreenOverlay(QWidget):
         self._shake_offset_x, self._shake_offset_y = value
         self.move(self.pos().x() - self._shake_offset_x, self.pos().y() - self._shake_offset_y)
 
+    @pyqtProperty(float)
+    def blinkLevel(self) -> float:
+        """How closed the stylized eyelid is (0 open, 1 closed)."""
+        return self._blink_level
+
+    @blinkLevel.setter
+    def blinkLevel(self, value: float):
+        self._blink_level = max(0.0, min(1.0, value))
+        self.update()
+
+    @pyqtProperty(float)
+    def pulseLevel(self) -> float:
+        """Soft breathing/pulse intensity (0-1)."""
+        return self._pulse_level
+
+    @pulseLevel.setter
+    def pulseLevel(self, value: float):
+        self._pulse_level = max(0.0, min(1.0, value))
+        self.update()
+
     def paintEvent(self, event):
         """Paint overlay with current opacity and tint."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        if self._red_tint > 0:
-            red = int(255 * self._red_tint)
-            color = QColor(red, 0, 0, int(80 * self._red_tint))
-            painter.fillRect(self.rect(), color)
+        if not self._animation_active:
+            return
 
-        if self._opacity < 1.0:
-            dim_color = QColor(0, 0, 0, int(50 * (1.0 - self._opacity)))
-            painter.fillRect(self.rect(), dim_color)
+        width = self.width()
+        height = self.height()
+
+        # Gentle vignette that never blocks content
+        backdrop_strength = max(0.0, 1.0 - self._opacity)
+        if backdrop_strength > 0:
+            center_point = self.rect().center()
+            vignette = QRadialGradient(QPointF(center_point), max(width, height) * 0.75)
+            vignette.setColorAt(0.0, QColor(12, 16, 30, int(80 * backdrop_strength)))
+            vignette.setColorAt(1.0, QColor(12, 16, 30, 0))
+            painter.fillRect(self.rect(), vignette)
+
+        # Soft red edge glow for irritation mode only; fades gently
+        if self._current_mode == AnimationMode.IRRITATION and self._red_tint > 0:
+            tint_alpha = int(140 * self._red_tint)
+            edge = QLinearGradient(0, 0, width, 0)
+            edge.setColorAt(0.0, QColor(255, 82, 82, 0))
+            edge.setColorAt(0.5, QColor(255, 82, 82, tint_alpha))
+            edge.setColorAt(1.0, QColor(255, 82, 82, 0))
+            painter.fillRect(self.rect(), edge)
+
+        # Card-style prompt near the top of the screen
+        card_width = min(int(width * 0.48), 520)
+        card_height = 128
+        card_rect = QRect(int((width - card_width) / 2), int(height * 0.08), card_width, card_height)
+
+        card_bg = QLinearGradient(
+            QPointF(card_rect.left(), card_rect.top()),
+            QPointF(card_rect.left(), card_rect.bottom()),
+        )
+        card_bg.setColorAt(0.0, QColor(15, 23, 42, 230))
+        card_bg.setColorAt(1.0, QColor(17, 24, 39, 210))
+
+        painter.setPen(QColor(255, 255, 255, 35))
+        painter.setBrush(card_bg)
+        painter.drawRoundedRect(card_rect, 16, 16)
+
+        # Eye graphic on the left
+        inset = 18
+        eye_center_x = card_rect.left() + 90
+        eye_center_y = card_rect.center().y()
+        eye_width = 140
+        eye_height = 56
+
+        eye_rect = QRect(
+            int(eye_center_x - eye_width / 2),
+            int(eye_center_y - eye_height / 2),
+            eye_width,
+            eye_height,
+        )
+
+        painter.setPen(QPen(QColor(180, 208, 255, 190), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(eye_rect)
+
+        # Iris
+        iris_radius = int((eye_height * 0.28) * (0.8 + 0.2 * self._pulse_level))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(125, 211, 252, 230))
+        painter.drawEllipse(
+            eye_rect.center().x() - iris_radius,
+            eye_rect.center().y() - iris_radius,
+            iris_radius * 2,
+            iris_radius * 2,
+        )
+
+        # Eyelid animation
+        if self._blink_level > 0:
+            lid_height = int(eye_height * self._blink_level)
+            lid_rect = QRect(
+                eye_rect.left() + 2,
+                eye_rect.top(),
+                eye_rect.width() - 4,
+                lid_height,
+            )
+            painter.setBrush(QColor(30, 41, 59, 240))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(lid_rect, 10, 10)
+
+        # Glow ring pulse
+        ring_alpha = int(110 * (0.2 + 0.8 * (1 - self._blink_level)) * (0.4 + 0.6 * self._pulse_level))
+        painter.setPen(QPen(QColor(94, 234, 212, ring_alpha), 3))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(eye_rect.adjusted(-6, -6, 6, 6))
+
+        # Text block on the right
+        text_left = card_rect.left() + eye_width + inset
+        title_font = QFont()
+        title_font.setPointSize(13)
+        title_font.setBold(True)
+
+        body_font = QFont()
+        body_font.setPointSize(10)
+
+        painter.setPen(QColor(255, 255, 255, 235))
+        painter.setFont(title_font)
+
+        title = "Blink break"
+        subtitle = "Gently close both eyes twice to keep them hydrated."
+        if self._current_mode == AnimationMode.IRRITATION:
+            title = "Eyes need a pause"
+            subtitle = "Look away 20 seconds and blink a few times to refresh."
+
+        painter.drawText(
+            QRect(text_left, card_rect.top() + inset + 2, card_rect.width() - eye_width - inset * 2, 26),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            title,
+        )
+
+        painter.setPen(QColor(226, 232, 240, 210))
+        painter.setFont(body_font)
+        painter.drawText(
+            QRect(
+                text_left,
+                card_rect.top() + inset + 28,
+                card_rect.width() - eye_width - inset * 2,
+                card_rect.height() - inset * 2 - 28,
+            ),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
+            subtitle,
+        )
 
     def set_intensity(self, intensity: AnimationIntensity):
         """Set animation intensity.
@@ -149,6 +307,8 @@ class ScreenOverlay(QWidget):
         self._irritation_ended = False
 
         self.show()
+        self._pulse_anim.stop()
+        self._pulse_anim.start()
         self._next_blink()
         logger.debug("Blink animation started")
 
@@ -162,6 +322,8 @@ class ScreenOverlay(QWidget):
         self._irritation_ended = False
 
         self.show()
+        self._pulse_anim.stop()
+        self._pulse_anim.start()
         self._start_irritation()
         logger.debug("Irritation animation started")
 
@@ -177,18 +339,23 @@ class ScreenOverlay(QWidget):
         self._blink_count += 1
 
         fade_out, hold, fade_in = self._get_blink_timings()
-        current_opacity = self._opacity
 
         self._opacity_anim.stop()
         self._opacity_anim.setDuration(fade_out)
-        self._opacity_anim.setStartValue(current_opacity)
+        self._opacity_anim.setStartValue(self._opacity)
         self._opacity_anim.setEndValue(self._get_blink_dim_level())
         self._opacity_anim.start()
 
-        QTimer.singleShot(fade_out + hold, lambda: self._fade_back_in(fade_in))
+        self._blink_anim.stop()
+        self._blink_anim.setDuration(fade_out)
+        self._blink_anim.setStartValue(self._blink_level)
+        self._blink_anim.setEndValue(1.0)
+        self._blink_anim.start()
 
-    def _fade_back_in(self, duration: int):
-        """Fade back to normal after blink."""
+        QTimer.singleShot(fade_out + hold, lambda: self._start_blink_open(fade_in))
+
+    def _start_blink_open(self, duration: int):
+        """Re-open eyelid and schedule next gentle blink."""
         if not self._animation_active:
             return
 
@@ -197,6 +364,12 @@ class ScreenOverlay(QWidget):
         self._opacity_anim.setStartValue(self._opacity)
         self._opacity_anim.setEndValue(1.0)
         self._opacity_anim.start()
+
+        self._blink_anim.stop()
+        self._blink_anim.setDuration(duration)
+        self._blink_anim.setStartValue(self._blink_level)
+        self._blink_anim.setEndValue(0.0)
+        self._blink_anim.start()
 
         QTimer.singleShot(duration, lambda: self._blink_timer.start(self._get_blink_interval()))
 
@@ -272,11 +445,15 @@ class ScreenOverlay(QWidget):
         self._irritation_timer.stop()
         self._opacity_anim.stop()
         self._tint_anim.stop()
+        self._blink_anim.stop()
+        self._pulse_anim.stop()
         if self._shake_anim:
             self._shake_anim.stop()
 
         self._opacity = 1.0
         self._red_tint = 0.0
+        self._blink_level = 0.0
+        self._pulse_level = 0.0
         self._shake_offset_x = 0
         self._shake_offset_y = 0
 
@@ -307,9 +484,9 @@ class ScreenOverlay(QWidget):
         """Get dim level for blink (0.0-1.0)."""
         # Keep screen visible; gentle dim instead of black flash
         return {
-            AnimationIntensity.LOW: 0.8,
-            AnimationIntensity.MEDIUM: 0.7,
-            AnimationIntensity.HIGH: 0.6,
+            AnimationIntensity.LOW: 0.94,
+            AnimationIntensity.MEDIUM: 0.9,
+            AnimationIntensity.HIGH: 0.88,
         }[self._intensity]
 
     def _get_irritation_duration(self) -> int:
