@@ -152,23 +152,25 @@ class SettingsDialog(QDialog):
         trigger_group = QGroupBox("Time-based triggers")
         trigger_layout = QFormLayout(trigger_group)
 
-        self._trigger_logic_combo = QComboBox()
-        self._trigger_logic_combo.addItem("If no blink for N seconds", TriggerLogic.NO_BLINK)
-        self._trigger_logic_combo.addItem("If blink rate below R blinks/min for X minutes", TriggerLogic.LOW_RATE)
-        self._trigger_logic_combo.addItem("Both (prioritize no-blink gap)", TriggerLogic.BOTH)
+        # Rule toggles for clarity
+        self._no_blink_rule_check = QCheckBox("Alert if no blink for N seconds")
+        self._low_rate_rule_check = QCheckBox("Alert if blink rate stays low")
+
         current_logic = self._temp_settings.trigger_logic
         if isinstance(current_logic, str):
             current_logic = TriggerLogic(current_logic)
-        trigger_logic_index = self._trigger_logic_combo.findData(current_logic)
-        if trigger_logic_index >= 0:
-            self._trigger_logic_combo.setCurrentIndex(trigger_logic_index)
-        trigger_layout.addRow("Trigger logic:", self._trigger_logic_combo)
+        self._no_blink_rule_check.setChecked(current_logic in (TriggerLogic.NO_BLINK, TriggerLogic.BOTH))
+        self._low_rate_rule_check.setChecked(current_logic in (TriggerLogic.LOW_RATE, TriggerLogic.BOTH))
+
+        trigger_layout.addRow(self._no_blink_rule_check)
 
         self._no_blink_spin = QSpinBox()
         self._no_blink_spin.setRange(5, 120)
         self._no_blink_spin.setSuffix(" seconds")
         self._no_blink_spin.setValue(self._temp_settings.no_blink_seconds)
         trigger_layout.addRow("No blink for:", self._no_blink_spin)
+
+        trigger_layout.addRow(self._low_rate_rule_check)
 
         self._low_rate_spin = QSpinBox()
         self._low_rate_spin.setRange(5, 30)
@@ -180,7 +182,7 @@ class SettingsDialog(QDialog):
         self._low_rate_duration.setRange(1, 15)
         self._low_rate_duration.setSuffix(" minutes")
         self._low_rate_duration.setValue(self._temp_settings.low_rate_duration_minutes)
-        trigger_layout.addRow("For duration:", self._low_rate_duration)
+        trigger_layout.addRow("…for at least:", self._low_rate_duration)
 
         self._alert_interval_spin = QSpinBox()
         self._alert_interval_spin.setRange(1, 60)
@@ -367,8 +369,25 @@ class SettingsDialog(QDialog):
             self._temp_settings.min_blinks_per_minute = blink_rate
             self._temp_settings.low_rate_threshold = blink_rate
             self._temp_settings.low_rate_duration_minutes = self._low_rate_duration.value()
+            # Determine trigger logic based on toggles
+            no_blink_enabled = self._no_blink_rule_check.isChecked()
+            low_rate_enabled = self._low_rate_rule_check.isChecked()
+            if not no_blink_enabled and not low_rate_enabled:
+                QMessageBox.warning(
+                    self,
+                    "No trigger selected",
+                    "Select at least one trigger rule (no-blink or low-rate) so alerts can run.",
+                )
+                return
+
+            if no_blink_enabled and low_rate_enabled:
+                self._temp_settings.trigger_logic = TriggerLogic.BOTH
+            elif no_blink_enabled:
+                self._temp_settings.trigger_logic = TriggerLogic.NO_BLINK
+            else:
+                self._temp_settings.trigger_logic = TriggerLogic.LOW_RATE
+
             self._temp_settings.no_blink_seconds = self._no_blink_spin.value()
-            self._temp_settings.trigger_logic = self._trigger_logic_combo.currentData()
 
             self._temp_settings.alert_mode = self._alert_mode_combo.currentData()
             self._temp_settings.animation_intensity = self._animation_intensity_combo.currentData()

@@ -59,6 +59,12 @@ class CaptureThread(QThread):
         self.requestInterruption()
         logger.info("Capture thread shutdown requested")
 
+    def set_camera_enabled(self, enabled: bool) -> None:
+        """Toggle camera usage without tearing down the thread."""
+        self._camera_enabled = enabled
+        if not enabled:
+            self.camera_status_changed.emit(False)
+
     def run(self) -> None:
         """Main capture loop."""
         while not self.isInterruptionRequested():

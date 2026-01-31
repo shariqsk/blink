@@ -10,6 +10,7 @@ from PyQt6.QtGui import (
     QFont,
     QLinearGradient,
     QPainter,
+    QPainterPath,
     QPen,
     QRadialGradient,
     QScreen,
@@ -212,8 +213,8 @@ class ScreenOverlay(QWidget):
         inset = 18
         eye_center_x = card_rect.left() + 90
         eye_center_y = card_rect.center().y()
-        eye_width = 140
-        eye_height = 56
+        eye_width = 150
+        eye_height = 62
 
         eye_rect = QRect(
             int(eye_center_x - eye_width / 2),
@@ -222,12 +223,12 @@ class ScreenOverlay(QWidget):
             eye_height,
         )
 
-        painter.setPen(QPen(QColor(180, 208, 255, 190), 2))
+        painter.setPen(QPen(QColor(180, 208, 255, 210), 2.4))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(eye_rect)
 
         # Iris
-        iris_radius = int((eye_height * 0.28) * (0.8 + 0.2 * self._pulse_level))
+        iris_radius = int((eye_height * 0.30) * (0.8 + 0.2 * self._pulse_level))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(125, 211, 252, 230))
         painter.drawEllipse(
@@ -237,22 +238,30 @@ class ScreenOverlay(QWidget):
             iris_radius * 2,
         )
 
-        # Eyelid animation
+        # Eyelid animation (curved lid following eye arc)
         if self._blink_level > 0:
-            lid_height = int(eye_height * self._blink_level)
-            lid_rect = QRect(
-                eye_rect.left() + 2,
-                eye_rect.top(),
-                eye_rect.width() - 4,
-                lid_height,
-            )
-            painter.setBrush(QColor(30, 41, 59, 240))
+            lid_height = eye_height * self._blink_level
+            lid_top = eye_rect.top()
+            lid_curve_y = lid_top - eye_height * 0.32
+            lid_close_y = lid_top + lid_height
+
+            lid_path = QPainterPath()
+            # Upper arc following the eye ellipse
+            lid_path.moveTo(eye_rect.left() + 6, lid_top)
+            lid_path.quadTo(eye_rect.center().x(), lid_curve_y, eye_rect.right() - 6, lid_top)
+            # Closing sweep down to the closing position
+            lid_path.lineTo(eye_rect.right() - 6, lid_close_y)
+            lid_path.quadTo(eye_rect.center().x(), lid_curve_y + eye_height * 0.45, eye_rect.left() + 6, lid_close_y)
+            lid_path.closeSubpath()
+
+            lid_color = QColor(25, 35, 54, 235)
+            painter.setBrush(lid_color)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(lid_rect, 10, 10)
+            painter.drawPath(lid_path)
 
         # Glow ring pulse
-        ring_alpha = int(110 * (0.2 + 0.8 * (1 - self._blink_level)) * (0.4 + 0.6 * self._pulse_level))
-        painter.setPen(QPen(QColor(94, 234, 212, ring_alpha), 3))
+        ring_alpha = int(120 * (0.2 + 0.8 * (1 - self._blink_level)) * (0.4 + 0.6 * self._pulse_level))
+        painter.setPen(QPen(QColor(94, 234, 212, ring_alpha), 3.2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(eye_rect.adjusted(-6, -6, 6, 6))
 
@@ -498,7 +507,7 @@ class ScreenOverlay(QWidget):
 
     def _get_blink_cycles(self) -> int:
         """Get number of blink cycles based on intensity."""
-        base = {AnimationIntensity.LOW: 4, AnimationIntensity.MEDIUM: 5, AnimationIntensity.HIGH: 6}[
+        base = {AnimationIntensity.LOW: 3, AnimationIntensity.MEDIUM: 4, AnimationIntensity.HIGH: 5}[
             self._intensity
         ]
         # Popup stays brief by design

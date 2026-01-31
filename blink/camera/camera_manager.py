@@ -113,20 +113,20 @@ class CameraManager(QObject):
 
             if not ret or frame is None:
                 self._consecutive_failures += 1
-                if self._consecutive_failures % 3 == 1:
+                if self._consecutive_failures % 2 == 1:
                     logger.warning("Failed to capture frame")
-                if self._consecutive_failures >= 6:
+                if self._consecutive_failures >= 4:
                     logger.warning("Capture failing repeatedly; attempting reopen with fallback backend")
                     self._attempt_reopen_locked()
                 return None
             self._consecutive_failures = 0
 
-            # Detect completely dark frames (common when backend opens the wrong device)
+            # Detect completely dark frames (common when wrong backend/id is opened)
             if frame.size == 0:
                 return None
             if frame.mean() < 1.0:
                 self._consecutive_dark += 1
-                if self._consecutive_dark >= 6:
+                if self._consecutive_dark >= 3:
                     logger.warning("Camera returning black frames; attempting reopen on another backend/id")
                     self._attempt_reopen_locked()
                 return None
@@ -202,10 +202,10 @@ class CameraManager(QObject):
         return [cid for cid, _ in self.get_camera_info()]
 
     def _preferred_backends(self) -> list[int]:
-        """Return a backend preference list (Windows first tries DSHOW then MSMF)."""
+        """Return backend preference list (favor stable Windows backends to avoid virtual cams)."""
         if platform.system().lower() == "windows":
-            # Try MSMF first; if it fails, fall back to DSHOW then ANY
-            return [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]
+            # Prefer DirectShow; then generic auto; avoid MSMF first to reduce NBX/NvCam errors
+            return [cv2.CAP_DSHOW, cv2.CAP_ANY, cv2.CAP_MSMF]
         return [cv2.CAP_ANY]
 
     def _attempt_reopen_locked(self) -> None:
@@ -213,21 +213,13 @@ class CameraManager(QObject):
         current_id = self._camera_id
         # Close current handle
         self._close_camera_unlocked()
-        # Try same id with remaining backends
-        for backend in self._preferred_backends():
-            cap = cv2.VideoCapture(current_id, backend)
-            if not cap.isOpened():
-                cap.release()
-                continue
-            self._capture = cap
-            self._backend = backend
-            self._is_open = True
-            self._consecutive_failures = 0
-            self._consecutive_dark = 0
-            logger.info(f"Reopened camera {current_id} with backend {backend}")
-            return
-        # Try other ids 0-3
-        for cid in range(0, 4):
+        # Try alternate IDs first (helps escape a bad virtual/IR cam), then original
+        candidate_ids = list(range(0, 4))
+        if current_id in candidate_ids:
+            candidate_ids.remove(current_id)
+        candidate_ids.append(current_id)
+
+        for cid in candidate_ids:
             for backend in self._preferred_backends():
                 cap = cv2.VideoCapture(cid, backend)
                 if not cap.isOpened():
@@ -239,7 +231,7 @@ class CameraManager(QObject):
                 self._is_open = True
                 self._consecutive_failures = 0
                 self._consecutive_dark = 0
-                logger.info(f"Reopened camera fallback id {cid} backend {backend}")
+                logger.info(f"Reopened camera id {cid} backend {backend}")
                 return
         logger.error("Reopen failed: no available camera")
 

@@ -10,6 +10,8 @@ from blink.utils.diagnostics import export_diagnostics
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QKeySequence, QShortcut, QImage, QPixmap
 from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -71,6 +73,7 @@ class MainWindow(QMainWindow):
         self._preview_timer.timeout.connect(self._capture_preview_frame)
 
         self._shortcuts: list[QShortcut] = []
+        self._camera_combo: QComboBox | None = None
         self._init_ui()
         self._init_hotkeys()
         self._update_status_display()
@@ -81,6 +84,28 @@ class MainWindow(QMainWindow):
         self._preview_label.clear()
         self._preview_label.setText("Preview not available")
 
+    def _populate_camera_combo(self) -> None:
+        """Fill the camera combo box with available devices."""
+        if not self._camera_combo:
+            return
+        self._camera_combo.clear()
+        cameras = self._refresh_available_cameras()
+        if not cameras:
+            # Fall back to generic IDs so user can still select a device
+            cameras = [(i, f"Camera {i}") for i in range(0, 3)]
+            self._camera_combo.setEnabled(True)
+        else:
+            self._camera_combo.setEnabled(True)
+        for cam_id, cam_name in cameras:
+            self._camera_combo.addItem(cam_name, cam_id)
+        # Set current selection
+        idx = self._camera_combo.findData(self.settings.camera_id)
+        if idx >= 0:
+            self._camera_combo.setCurrentIndex(idx)
+        else:
+            self._camera_combo.setCurrentIndex(0)
+            self.settings.camera_id = self._camera_combo.currentData()
+            self.config_manager.save(self.settings)
     def _init_ui(self) -> None:
         """Initialize UI components with a high-contrast, non-overlapping layout."""
         self.setWindowTitle("Blink! - Eye Health Monitor")
@@ -210,6 +235,23 @@ class MainWindow(QMainWindow):
         controls_layout.setContentsMargins(14, 14, 14, 14)
         controls_layout.setSpacing(10)
 
+        # Camera quick picker
+        camera_row = QHBoxLayout()
+        camera_row.setSpacing(8)
+        camera_label = QLabel("Camera")
+        camera_label.setObjectName("SectionTitle")
+        self._camera_combo = QComboBox()
+        self._populate_camera_combo()
+        self._camera_combo.currentIndexChanged.connect(self._on_camera_selected)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setObjectName("Neutral")
+        refresh_btn.setMinimumHeight(32)
+        refresh_btn.clicked.connect(self._refresh_camera_list)
+        camera_row.addWidget(camera_label)
+        camera_row.addWidget(self._camera_combo, stretch=1)
+        camera_row.addWidget(refresh_btn)
+        controls_layout.addLayout(camera_row)
+
         self._start_button = QPushButton("Start monitoring")
         self._start_button.setObjectName("Primary")
         self._start_button.setMinimumHeight(46)
@@ -238,6 +280,10 @@ class MainWindow(QMainWindow):
         self._preview_button.setMinimumHeight(40)
         self._preview_button.clicked.connect(self._toggle_preview)
 
+        self._camera_enable_check = QCheckBox("Enable camera")
+        self._camera_enable_check.setChecked(self.settings.camera_enabled)
+        self._camera_enable_check.stateChanged.connect(self._toggle_camera_enabled)
+
         self._settings_button = QPushButton("Settings")
         self._settings_button.setObjectName("Neutral")
         self._settings_button.setMinimumHeight(40)
@@ -257,6 +303,7 @@ class MainWindow(QMainWindow):
         action_grid.addWidget(self._settings_button, 0, 1)
         action_grid.addWidget(self._test_animation_button, 1, 0)
         action_grid.addWidget(self._export_button, 1, 1)
+        action_grid.addWidget(self._camera_enable_check, 2, 0, 1, 2)
 
         controls_layout.addLayout(action_grid)
 
@@ -329,13 +376,20 @@ class MainWindow(QMainWindow):
             "font-weight: 700;"
         )
 
-    def _toggle_monitoring(self) -> None:
+    def _toggle_monitoring(self, force_stop: bool = False) -> None:
         """Toggle monitoring state."""
         if self._preview_timer.isActive():
             self._preview_timer.stop()
             self._preview_button.setText("Preview camera")
 
-        self._monitoring = not self._monitoring
+        # Auto-enable camera when starting
+        if not force_stop and not self._monitoring and not self.settings.camera_enabled:
+            self.settings.camera_enabled = True
+            self._camera_enable_check.setChecked(True)
+            self.config_manager.save(self.settings)
+            self.signal_bus.camera_enabled_changed.emit(True)
+
+        self._monitoring = not force_stop and not self._monitoring
 
         if self._monitoring:
             self._start_button.setText("Stop monitoring")
@@ -491,6 +545,13 @@ class MainWindow(QMainWindow):
         self._preview_enabled = True
         self._preview_button.setText("Stop preview")
 
+        # Auto-enable camera for preview
+        if not self.settings.camera_enabled:
+            self.settings.camera_enabled = True
+            self._camera_enable_check.setChecked(True)
+            self.config_manager.save(self.settings)
+            self.signal_bus.camera_enabled_changed.emit(True)
+
         if self._monitoring:
             # When monitoring is running, we reuse worker-emitted preview frames.
             return
@@ -526,14 +587,58 @@ class MainWindow(QMainWindow):
         """
         self.settings = settings
         self._init_hotkeys()
+        self._camera_enable_check.setChecked(self.settings.camera_enabled)
+        self._populate_camera_combo()
         logger.info("Settings updated and hotkeys refreshed")
 
+    def _toggle_camera_enabled(self) -> None:
+        """Enable/disable camera from the main window toggle."""
+        enabled = self._camera_enable_check.isChecked()
+        self.settings.camera_enabled = enabled
+        self.config_manager.save(self.settings)
+        self.signal_bus.camera_enabled_changed.emit(enabled)
+        # If camera was disabled while monitoring, stop to release resources
+        if not enabled and self._monitoring:
+            self._toggle_monitoring(force_stop=True)
+        status = "enabled" if enabled else "disabled"
+        logger.info(f"Camera {status} via main window toggle")
+
     def _refresh_available_cameras(self) -> list[tuple[int, str]]:
-        """Refresh cached camera list so Settings dialog shows current devices."""
-        latest = self.camera_manager.get_camera_info()
-        if latest:
-            self._available_cameras = latest
+        """Refresh camera list (cached, but re-enumerate if empty)."""
+        if not self._available_cameras:
+            self._available_cameras = self.camera_manager.get_camera_info()
         return self._available_cameras
+
+    def _refresh_camera_list(self) -> None:
+        """Force re-enumeration of cameras and repopulate dropdown."""
+        self._available_cameras = self.camera_manager.get_camera_info()
+        logger.info(f"Camera list refreshed: {self._available_cameras}")
+        self._populate_camera_combo()
+
+    def _on_camera_selected(self) -> None:
+        """Handle camera selection change from the main screen."""
+        if not self._camera_combo:
+            return
+        cam_id = self._camera_combo.currentData()
+        if cam_id is None or cam_id == -1:
+            return
+
+        if self.settings.camera_id == cam_id:
+            return
+
+        self.settings.camera_id = cam_id
+        self.config_manager.save(self.settings)
+        logger.info(f"Camera changed from main window to ID {cam_id}")
+        # Propagate to worker and other components
+        self.signal_bus.settings_changed.emit(self.settings)
+
+        # If preview/monitoring is active, give user instant feedback
+        if self._monitoring:
+            self.signal_bus.stop_monitoring.emit()
+            self.signal_bus.start_monitoring.emit()
+        elif self._preview_enabled:
+            self.signal_bus.stop_preview.emit()
+            self.signal_bus.start_preview.emit()
 
     @pyqtSlot(bool)
     def set_camera_status(self, active: bool) -> None:

@@ -7,6 +7,9 @@ import sys
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("MEDIAPIPE_DISABLE_GPU", "1")
+# Force OpenCV to prefer DirectShow over MSMF to avoid Nvidia Broadcast/virtual cam issues on Windows
+os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_MSMF", "0")
+os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_DSHOW", "1")
 
 from blink.camera.camera_manager import CameraManager
 from blink.config.config_manager import ConfigManager
@@ -106,14 +109,17 @@ class BlinkApplication(QApplication):
         self.available_cameras = self.camera_manager.get_camera_info()
         if self.available_cameras:
             logger.info(f"Discovered cameras at startup: {self.available_cameras}")
-            first_cam_id = self.available_cameras[0][0]
-            if self.settings.camera_id not in [cid for cid, _ in self.available_cameras]:
+            available_ids = [cid for cid, _ in self.available_cameras]
+            if self.settings.camera_id not in available_ids:
+                fallback_cam_id = self.available_cameras[0][0]
                 logger.info(
                     f"Configured camera_id {self.settings.camera_id} not present; "
-                    f"switching to available camera {first_cam_id}"
+                    f"switching to available camera {fallback_cam_id}"
                 )
-                self.settings.camera_id = first_cam_id
+                self.settings.camera_id = fallback_cam_id
                 self.config_manager.save(self.settings)
+            else:
+                logger.info(f"Using configured camera_id: {self.settings.camera_id}")
         else:
             logger.warning("No cameras discovered at startup")
         logger.info("Camera manager initialized")
@@ -131,6 +137,7 @@ class BlinkApplication(QApplication):
             target_fps=target_fps,
             camera_id=self.settings.camera_id,
             resolution=resolution,
+            camera_enabled=self.settings.camera_enabled,
         )
         self.vision_worker.moveToThread(self.vision_thread)
 
@@ -149,6 +156,9 @@ class BlinkApplication(QApplication):
         self.signal_bus.stop_monitoring.connect(self.vision_worker.stop_monitoring, Qt.ConnectionType.QueuedConnection)
         self.signal_bus.start_preview.connect(self.vision_worker.start_preview, Qt.ConnectionType.QueuedConnection)
         self.signal_bus.stop_preview.connect(self.vision_worker.stop_preview, Qt.ConnectionType.QueuedConnection)
+        self.signal_bus.camera_enabled_changed.connect(
+            self.vision_worker.set_camera_enabled, Qt.ConnectionType.QueuedConnection
+        )
         self.signal_bus.test_animation.connect(self._on_test_animation)
         self.signal_bus.settings_changed.connect(self._on_settings_changed)
 
@@ -320,6 +330,7 @@ class BlinkApplication(QApplication):
             self.vision_worker.set_target_fps(new_settings.target_fps)
             self.vision_worker.set_camera_resolution(new_settings.get_resolution_tuple())
             self.vision_worker.set_camera_id(new_settings.camera_id)
+            self.vision_worker.set_camera_enabled(new_settings.camera_enabled)
 
     def _set_tray_status(self, text: str) -> None:
         """Update tray status text if tray is present."""

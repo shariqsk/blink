@@ -38,6 +38,7 @@ class VisionWorker(QObject):
         target_fps: int = 15,
         camera_id: int = 0,
         resolution: tuple[int, int] = (640, 480),
+        camera_enabled: bool = True,
     ):
         """Initialize vision worker.
 
@@ -52,6 +53,7 @@ class VisionWorker(QObject):
         self.target_fps = target_fps
         self.camera_id = camera_id
         self.resolution = resolution
+        self._camera_enabled_flag = camera_enabled
 
         # Processing components
         self._face_detector: Optional[FaceDetector] = None
@@ -116,22 +118,36 @@ class VisionWorker(QObject):
 
     def _ensure_camera_open_locked(self) -> bool:
         """Try current camera, then fall back; caller must hold mutex."""
+        def _opened_and_responding() -> bool:
+            """Validate the camera returns a real frame right after open."""
+            frame = self.camera_manager.capture_frame()
+            if frame is None:
+                return False
+            if frame.size == 0 or frame.mean() < 1.0:
+                return False
+            return True
+
         if self.camera_manager.is_open():
             return True
-        if self.camera_manager.open_camera(
-            camera_id=self.camera_id,
-            resolution=self.resolution,
-        ):
-            return True
+
+        # First try the configured camera_id
+        if self.camera_manager.open_camera(camera_id=self.camera_id, resolution=self.resolution):
+            if _opened_and_responding():
+                return True
+            logger.warning(f"Camera {self.camera_id} opened but returned empty frames; retrying fallbacks")
+            self.camera_manager.close_camera()
 
         logger.warning(f"Primary camera {self.camera_id} failed, probing fallbacks")
         for cid in range(0, self._max_camera_id_probe + 1):
             if cid == self.camera_id:
                 continue
             if self.camera_manager.open_camera(camera_id=cid, resolution=self.resolution):
-                self.camera_id = cid
-                logger.info(f"Fell back to camera {cid}")
-                return True
+                if _opened_and_responding():
+                    self.camera_id = cid
+                    logger.info(f"Fell back to camera {cid}")
+                    return True
+                self.camera_manager.close_camera()
+
         logger.error("No available camera found during fallback probe")
         return False
 
@@ -142,9 +158,18 @@ class VisionWorker(QObject):
             if self._running:
                 return
 
+            if not self._camera_enabled_flag:
+                logger.info("Camera disabled; start_monitoring skipped")
+                self.camera_status_changed.emit(False)
+                self.error_occurred.emit("Camera is disabled. Enable it to start monitoring.")
+                return
+
             if not self._ensure_camera_open_locked():
                 self.error_occurred.emit("Failed to open camera")
                 return
+
+            # Notify UI immediately that the camera is on
+            self.camera_status_changed.emit(True)
 
             # Initialize if not already
             if self._face_detector is None:
@@ -186,7 +211,8 @@ class VisionWorker(QObject):
             # Clear frame queue
             self._frame_queue.clear()
 
-            # Keep camera open to allow instant restart; only emit inactive status
+            # Fully release camera so LED turns off and device is free
+            self.camera_manager.close_camera()
             self.camera_status_changed.emit(False)
             self.face_detected.emit(False)
             logger.info("Vision monitoring stopped")
@@ -198,6 +224,11 @@ class VisionWorker(QObject):
         """Start preview-only mode (no detection)."""
         self._mutex.lock()
         try:
+            if not self._camera_enabled_flag:
+                logger.info("Camera disabled; preview skipped")
+                self.camera_status_changed.emit(False)
+                return
+
             if self._preview_only and self._capture_thread and self._capture_thread.is_running:
                 return
 
@@ -213,6 +244,9 @@ class VisionWorker(QObject):
             if not self._ensure_camera_open_locked():
                 self.error_occurred.emit("Failed to open camera for preview")
                 return
+
+            # Notify UI immediately that the camera is on
+            self.camera_status_changed.emit(True)
 
             if self._capture_thread:
                 self._preview_only = True
@@ -234,7 +268,31 @@ class VisionWorker(QObject):
             if self._capture_thread:
                 self._capture_thread.stop_capture()
             self.frame_preview.emit(None)
-            logger.info("Preview-only capture stopped")
+            # Ensure camera is released when preview ends
+            self.camera_manager.close_camera()
+            self.camera_status_changed.emit(False)
+            logger.info("Preview-only capture stopped and camera released")
+        finally:
+            self._mutex.unlock()
+
+    def set_camera_enabled(self, enabled: bool) -> None:
+        """Enable or disable camera usage at runtime."""
+        self._mutex.lock()
+        try:
+            self._camera_enabled_flag = enabled
+            if not enabled:
+                self._running = False
+                self._preview_only = False
+                if self._capture_thread:
+                    self._capture_thread.stop_capture()
+                self._frame_queue.clear()
+                self.camera_manager.close_camera()
+                self.camera_status_changed.emit(False)
+                self.face_detected.emit(False)
+                logger.info("Camera disabled; capture stopped and device released")
+            else:
+                # Allow instant reopen on next start/preview
+                logger.info("Camera enabled; ready for monitoring or preview")
         finally:
             self._mutex.unlock()
 
@@ -443,23 +501,41 @@ class VisionWorker(QObject):
         Args:
             resolution: Resolution tuple (width, height).
         """
-        if self.camera_manager.is_open():
-            # Need to restart camera with new resolution
-            self.stop_monitoring()
-            self.camera_manager.open_camera(
-                camera_id=self.camera_id,
-                resolution=resolution,
-            )
-            self.start_monitoring()
-        else:
-            self.camera_manager.open_camera(
-                camera_id=self.camera_id,
-                resolution=resolution,
-            )
+        was_running = self._running
+        was_preview = self._preview_only
 
+        if was_running:
+            self.stop_monitoring()
+        elif was_preview:
+            self.stop_preview()
+        else:
+            # Ensure camera is closed before applying new settings
+            self.camera_manager.close_camera()
+
+        self.resolution = resolution
         logger.info(f"Camera resolution set to {resolution}")
+
+        if was_running:
+            self.start_monitoring()
+        elif was_preview:
+            self.start_preview()
 
     def set_camera_id(self, camera_id: int) -> None:
         """Set camera device ID."""
+        was_running = self._running
+        was_preview = self._preview_only
+
+        if was_running:
+            self.stop_monitoring()
+        elif was_preview:
+            self.stop_preview()
+        else:
+            self.camera_manager.close_camera()
+
         self.camera_id = camera_id
         logger.info(f"Camera ID set to {camera_id}")
+
+        if was_running:
+            self.start_monitoring()
+        elif was_preview:
+            self.start_preview()

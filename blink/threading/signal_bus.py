@@ -22,6 +22,7 @@ class SignalBus(QObject):
     stop_monitoring = pyqtSignal()
     start_preview = pyqtSignal()
     stop_preview = pyqtSignal()
+    camera_enabled_changed = pyqtSignal(bool)
     settings_changed = pyqtSignal(object)
     pause_for_duration = pyqtSignal(int)
     pause_until_tomorrow = pyqtSignal()
