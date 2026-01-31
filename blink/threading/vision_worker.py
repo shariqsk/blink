@@ -14,10 +14,10 @@ from blink.vision.blink_detector import BlinkDetector, BlinkMetrics
 from blink.vision.eye_analyzer import EyeAnalyzer, EyeMetrics
 from blink.vision.face_detector import FaceDetector
 from loguru import logger
-from PyQt6.QtCore import QThread, QMutex, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QMutex, pyqtSignal
 
 
-class VisionWorker(QThread):
+class VisionWorker(QObject):
     """Vision processing worker with real eye detection."""
 
     # Status signals
@@ -95,6 +95,7 @@ class VisionWorker(QThread):
 
         # Initialize capture thread
         self._capture_thread = CaptureThread(self.camera_manager, self.target_fps)
+        # Cross-thread signals will be queued automatically because CaptureThread lives on its own thread
         self._capture_thread.frame_ready.connect(self._process_frame)
         self._capture_thread.camera_status_changed.connect(self.camera_status_changed)
         self._capture_thread.camera_error.connect(self.error_occurred)
@@ -129,7 +130,8 @@ class VisionWorker(QThread):
             # Start capture thread
             if self._capture_thread:
                 self._capture_thread.start_capture()
-                self._capture_thread.start()
+                if not self._capture_thread.isRunning():
+                    self._capture_thread.start()
 
             self._running = True
             self._calibrating = False
@@ -154,6 +156,12 @@ class VisionWorker(QThread):
 
             # Clear frame queue
             self._frame_queue.clear()
+
+            # Close camera to release device
+            self.camera_manager.close_camera()
+
+            # Notify UI/callers that camera is inactive
+            self.camera_status_changed.emit(False)
 
             self.face_detected.emit(False)
             logger.info("Vision monitoring stopped")
@@ -294,8 +302,8 @@ class VisionWorker(QThread):
         self.stop_monitoring()
 
         if self._capture_thread:
-            self._capture_thread.quit()
-            self._capture_thread.wait()
+            self._capture_thread.shutdown()
+            self._capture_thread.wait(2000)
             self._capture_thread = None
 
         if self._face_detector:

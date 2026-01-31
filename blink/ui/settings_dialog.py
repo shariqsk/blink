@@ -48,11 +48,17 @@ class SettingsDialog(QDialog):
 
         self.setStyleSheet(
             """
-            QDialog { background: #f7f9fb; }
-            QLabel { color: #2c3e50; }
-            QGroupBox { border: 1px solid #e1e8ed; border-radius: 6px; margin-top: 10px; }
-            QGroupBox:title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }
-            QPushButton { padding: 8px 14px; border-radius: 6px; background: #3498db; color: white; }
+            QDialog { background: #0f172a; }
+            QLabel { color: #e2e8f0; }
+            QTabWidget::pane { border: 1px solid #1f2c46; border-radius: 10px; padding: 6px; }
+            QTabBar::tab { background: #0b1220; color: #cbd5e1; padding: 10px 14px; border: 1px solid #1f2c46; border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 4px; }
+            QTabBar::tab:selected { background: #111a2f; color: #e2e8f0; }
+            QGroupBox { border: 1px solid #1f2c46; border-radius: 10px; margin-top: 12px; color: #e2e8f0; }
+            QGroupBox:title { subcontrol-origin: margin; left: 10px; padding: 0 6px; }
+            QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox, QTimeEdit { background: #0b1220; color: #e2e8f0; border: 1px solid #1f2c46; border-radius: 6px; padding: 6px; }
+            QCheckBox { color: #e2e8f0; }
+            QPushButton { padding: 10px 16px; border-radius: 8px; background: #0ea5e9; color: #0b1220; font-weight: 700; }
+            QPushButton:disabled { background: #1f2c46; color: #7c879e; }
             """
         )
         self._init_ui()
@@ -60,7 +66,7 @@ class SettingsDialog(QDialog):
     def _init_ui(self) -> None:
         """Initialize UI components."""
         self.setWindowTitle("Blink! Settings")
-        self.setMinimumSize(720, 620)
+        self.setMinimumSize(760, 660)
 
         layout = QVBoxLayout(self)
 

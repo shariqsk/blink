@@ -43,14 +43,21 @@ class CaptureThread(QThread):
         logger.info(f"Capture thread started (target FPS: {self.target_fps})")
 
     def stop_capture(self) -> None:
-        """Stop camera capture."""
+        """Stop camera capture (keeps thread alive but idle)."""
         self._running = False
         self._camera_enabled = False
         logger.info("Capture thread stopped")
 
+    def shutdown(self) -> None:
+        """Request the thread to exit its run loop."""
+        self._running = False
+        self._camera_enabled = False
+        self.requestInterruption()
+        logger.info("Capture thread shutdown requested")
+
     def run(self) -> None:
         """Main capture loop."""
-        while True:
+        while not self.isInterruptionRequested():
             if not self._running:
                 self.msleep(100)
                 continue
@@ -82,6 +89,8 @@ class CaptureThread(QThread):
             # Throttle to target FPS
             frame_time = time()
             sleep(max(0, self._frame_interval - (time() - frame_time)))
+
+        logger.info("Capture thread exiting")
 
     @property
     def is_running(self) -> bool:

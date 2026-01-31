@@ -381,6 +381,13 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         """Open settings dialog."""
+        was_monitoring = self._monitoring
+        was_preview = self._preview_timer.isActive()
+        if was_monitoring:
+            self._toggle_monitoring()
+        elif was_preview:
+            self._toggle_preview()
+
         dialog = SettingsDialog(
             self.settings,
             parent=self,
@@ -392,6 +399,12 @@ class MainWindow(QMainWindow):
             self.signal_bus.settings_changed.emit(self.settings)
             self._init_hotkeys()  # refresh shortcuts
             logger.info("Settings updated from dialog")
+
+        # Restore previous run state
+        if was_monitoring and not self._monitoring:
+            self._toggle_monitoring()
+        elif was_preview and not self._preview_timer.isActive():
+            self._toggle_preview()
 
     def _trigger_test_animation(self) -> None:
         """Request a test animation."""
@@ -455,6 +468,9 @@ class MainWindow(QMainWindow):
         if self._preview_timer.isActive():
             self._preview_timer.stop()
             self._preview_button.setText("Preview camera")
+            # If monitoring is not running, release the camera when preview stops.
+            if not self._monitoring and self.camera_manager.is_open():
+                self.camera_manager.close_camera()
             return
 
         if not self.camera_manager.is_open():

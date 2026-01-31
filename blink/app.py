@@ -1,6 +1,12 @@
 """Main application orchestrator for Blink!."""
 
+import os
 import sys
+
+# Quiet noisy backends (MediaPipe / TF Lite) so users don't see warning spam.
+os.environ.setdefault("GLOG_minloglevel", "2")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("MEDIAPIPE_DISABLE_GPU", "1")
 
 from blink.camera.camera_manager import CameraManager
 from blink.config.config_manager import ConfigManager
@@ -16,6 +22,7 @@ from blink.utils.logger import setup_logging
 from blink.utils.platform import get_app_paths
 from loguru import logger
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
+from PyQt6.QtCore import QThread, Qt
 
 
 class BlinkApplication(QApplication):
@@ -38,7 +45,7 @@ class BlinkApplication(QApplication):
         self._init_trigger_engine()
         self._wire_status_signals()
         self._init_camera()
-        self._init_vision_worker()
+        self._init_vision_worker_thread()
         self._init_ui()
 
         logger.info("Blink! application initialized")
@@ -98,20 +105,24 @@ class BlinkApplication(QApplication):
         self.camera_manager = CameraManager()
         logger.info("Camera manager initialized")
 
-    def _init_vision_worker(self) -> None:
-        """Initialize vision worker thread."""
+    def _init_vision_worker_thread(self) -> None:
+        """Spin up the vision worker in its own thread to avoid UI freezes."""
         resolution = self.settings.get_resolution_tuple()
         target_fps = self.settings.target_fps
 
-        resolution = self.settings.get_resolution_tuple()
+        self.vision_thread = QThread(self)
+        self.vision_thread.setObjectName("VisionThread")
+        self.vision_thread.setPriority(QThread.Priority.NormalPriority)
+
         self.vision_worker = VisionWorker(
             camera_manager=self.camera_manager,
             target_fps=target_fps,
             camera_id=self.settings.camera_id,
             resolution=resolution,
         )
+        self.vision_worker.moveToThread(self.vision_thread)
 
-        # Connect vision worker signals
+        # Connect vision worker signals (queued across threads automatically)
         self.vision_worker.blink_detected.connect(self._on_blink_detected)
         self.vision_worker.statistics_updated.connect(self._on_statistics_updated)
         self.vision_worker.face_detected.connect(self._on_face_detected)
@@ -122,12 +133,16 @@ class BlinkApplication(QApplication):
         self.vision_worker.frame_preview.connect(self._on_frame_preview)
 
         # Connect signal bus to vision worker
-        self.signal_bus.start_monitoring.connect(self.vision_worker.start_monitoring)
-        self.signal_bus.stop_monitoring.connect(self.vision_worker.stop_monitoring)
+        self.signal_bus.start_monitoring.connect(self.vision_worker.start_monitoring, Qt.ConnectionType.QueuedConnection)
+        self.signal_bus.stop_monitoring.connect(self.vision_worker.stop_monitoring, Qt.ConnectionType.QueuedConnection)
         self.signal_bus.test_animation.connect(self._on_test_animation)
         self.signal_bus.settings_changed.connect(self._on_settings_changed)
 
-        logger.info("Vision worker initialized")
+        # Ensure worker cleans up when thread finishes
+        self.vision_thread.finished.connect(self.vision_worker.cleanup)
+        self.vision_thread.start()
+
+        logger.info("Vision worker thread started")
 
     def _init_ui(self) -> None:
         """Initialize UI components."""
@@ -310,13 +325,15 @@ class BlinkApplication(QApplication):
             self.screen_overlay.stop_animation()
 
         # Stop vision worker
-        if self.vision_worker.is_running:
+        if hasattr(self, "vision_worker") and self.vision_worker.is_running:
             self.vision_worker.stop_monitoring()
 
-        # Clean up vision worker
-        self.vision_worker.cleanup()
+        # Clean up vision worker + thread
+        if hasattr(self, "vision_thread"):
+            self.vision_thread.quit()
+            self.vision_thread.wait(2000)
 
-        # Close camera
+        # Final camera close (idempotent)
         self.camera_manager.close_camera()
 
         logger.info("Application cleanup complete")
